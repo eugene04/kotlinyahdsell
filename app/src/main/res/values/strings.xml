@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">YahdSell</string>
+    <string name="default_notification_channel_id" translatable="false">yahdsell_notifications</string>
+</resources>
+

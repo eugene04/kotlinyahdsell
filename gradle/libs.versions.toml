@@ -1,0 +1,115 @@
+[versions]
+# Core & Android
+androidGradlePlugin = "8.4.1"
+kotlin = "1.9.24"
+coreKtx = "1.13.1"
+lifecycleRuntimeKtx = "2.8.1"
+activityCompose = "1.9.0"
+
+# Compose
+composeBom = "2024.06.00"
+composeCompiler = "1.5.14"
+navigationCompose = "2.7.7"
+hiltNavigationCompose = "1.2.0"
+
+# Firebase
+firebaseBom = "33.1.0"
+googleServices = "4.4.2"
+
+# Google Services (Maps, Location)
+playServicesLocation = "21.3.0"
+playServicesMaps = "18.2.0"
+mapsCompose = "4.3.3"
+mapsUtilsKtx = "4.3.3"
+
+# Hilt
+hilt = "2.51.1"
+ksp = "1.9.24-1.0.20"
+
+# Networking & Serialization
+gson = "2.10.1"
+
+# UI & Images
+coil = "2.6.0"
+media3 = "1.3.1"
+accompanistSwipeRefresh = "0.34.0"
+
+# Payments
+stripe = "20.44.0"
+
+# Coroutines
+coroutines = "1.8.1"
+
+# Testing
+junit = "4.13.2"
+testExtJunit = "1.1.5"
+espressoCore = "3.5.1"
+
+[libraries]
+# AndroidX & Core - ✅ FIXED: Using camelCase for all aliases
+androidxCoreKtx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidxLifecycleRuntimeKtx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidxActivityCompose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidxNavigationCompose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+
+# Compose
+androidxComposeBom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+composeUi = { group = "androidx.compose.ui", name = "ui" }
+composeUiGraphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+composeUiTooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+composeUiToolingPreview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+composeMaterial3 = { group = "androidx.compose.material3", name = "material3"}
+composeMaterialIconsExtended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidxUiTestJunit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidxUiTestManifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+
+
+# Firebase
+firebaseBom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebaseAuth = { group = "com.google.firebase", name = "firebase-auth-ktx" }
+firebaseFirestore = { group = "com.google.firebase", name = "firebase-firestore-ktx" }
+firebaseStorage = { group = "com.google.firebase", name = "firebase-storage-ktx" }
+firebaseFunctions = { group = "com.google.firebase", name = "firebase-functions-ktx" }
+firebaseAppcheck = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
+firebaseMessaging = { group = "com.google.firebase", name = "firebase-messaging-ktx" }
+
+# Google Services (Location & Maps)
+googlePlayServicesLocation = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+googlePlayServicesMaps = { group = "com.google.android.gms", name = "play-services-maps", version.ref = "playServicesMaps" }
+googleMapsCompose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
+googleMapsComposeUtils = { group = "com.google.maps.android", name = "maps-compose-utils", version.ref = "mapsUtilsKtx" }
+
+# Hilt (Dependency Injection)
+hiltAndroid = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hiltCompiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
+hiltNavigationCompose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+
+# Stripe Payments
+stripeAndroid = { group = "com.stripe", name = "stripe-android", version.ref = "stripe" }
+
+# Media & Images
+coilCompose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+media3Ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+media3Exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+
+# Coroutines
+kotlinxCoroutinesAndroid = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinxCoroutinesPlayServices = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
+
+# Other
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+accompanistSwiperefresh = { group = "com.google.accompanist", name = "accompanist-swiperefresh", version.ref = "accompanistSwipeRefresh" }
+
+# Testing
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidxTestExtJunit = { group = "androidx.test.ext", name = "junit", version.ref = "testExtJunit" }
+androidxEspressoCore = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+
