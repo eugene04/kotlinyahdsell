@@ -6,7 +6,6 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gari.yahdsell2.model.*
-import com.google.android.gms.maps.model.LatLngBounds
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.ktx.userProfileChangeRequest
 import com.google.firebase.firestore.*
@@ -18,10 +17,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import java.net.URLDecoder
 import java.util.*
 import javax.inject.Inject
 import kotlin.math.*
@@ -170,6 +167,12 @@ class MainViewModel @Inject constructor(
     private val _productToEdit = MutableStateFlow<Product?>(null)
     val productToEdit: StateFlow<Product?> = _productToEdit.asStateFlow()
 
+    private val _visualSearchSuggestion = MutableStateFlow<Pair<String, String>?>(null)
+    val visualSearchSuggestion: StateFlow<Pair<String, String>?> = _visualSearchSuggestion.asStateFlow()
+
+    private val _isProcessingVisualSearch = MutableStateFlow(false)
+    val isProcessingVisualSearch: StateFlow<Boolean> = _isProcessingVisualSearch.asStateFlow()
+
 
     // --- Listeners ---
     private var commentsListener: ListenerRegistration? = null
@@ -186,7 +189,15 @@ class MainViewModel @Inject constructor(
 
 
     init {
-        checkCurrentUser()
+        auth.addAuthStateListener { firebaseAuth ->
+            val user = firebaseAuth.currentUser
+            _userState.value = if (user != null) {
+                UserState.Authenticated(user)
+            } else {
+                UserState.Unauthenticated
+            }
+        }
+
         viewModelScope.launch {
             userState.collect { state ->
                 if (state is UserState.Authenticated) {
@@ -273,17 +284,36 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    // --- API Call Helper ---
+    private fun callApi(action: String, data: Map<String, Any?>): com.google.android.gms.tasks.Task<com.google.firebase.functions.HttpsCallableResult> {
+        val finalData = data.toMutableMap()
+        val actionsRequiringAuth = listOf(
+            "submitProduct", "updateProduct", "proposeProductSwap", "respondToSwap", "placeBid",
+            "markListingAsSold", "relistProduct", "clearAllNotifications", "requestVerification",
+            "approveVerificationRequest", "saveSearch", "confirmPromotion"
+        )
+        if (actionsRequiringAuth.contains(action)) {
+            auth.currentUser?.uid?.let {
+                when (action) {
+                    "submitProduct", "updateProduct", "markListingAsSold", "relistProduct" -> finalData["sellerId"] = it
+                    "proposeProductSwap" -> finalData["proposingUserId"] = it
+                    "respondToSwap" -> finalData["currentUserId"] = it
+                    "placeBid" -> finalData["bidderId"] = it
+                    "clearAllNotifications", "requestVerification", "saveSearch", "confirmPromotion" -> finalData["userId"] = it
+                    "approveVerificationRequest" -> finalData["adminId"] = it
+                }
+            }
+        }
+        return functions.getHttpsCallable("publicApi").call(mapOf("action" to action, "data" to finalData))
+    }
+
     // --- Product Management ---
     fun fetchProducts(latitude: Double?, longitude: Double?) {
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
-                val data = hashMapOf(
-                    "latitude" to latitude,
-                    "longitude" to longitude
-                )
-
-                val result = functions.getHttpsCallable("getRankedProducts").call(data).await()
+                val data = hashMapOf("latitude" to latitude, "longitude" to longitude)
+                val result = callApi("getRankedProducts", data).await()
 
                 @Suppress("UNCHECKED_CAST")
                 val rankedProductData = (result.data as? Map<String, Any>)?.get("rankedProducts") as? List<Map<String, Any>>
@@ -373,14 +403,16 @@ class MainViewModel @Inject constructor(
                     }
                 }
 
+                val locationData = mapOf("latitude" to sellerLocation.latitude, "longitude" to sellerLocation.longitude)
+
                 val data = hashMapOf(
                     "name" to name, "description" to description, "price" to price, "category" to category, "condition" to condition,
                     "imageUris" to imageUploadUrls, "videoUri" to videoUploadUrl,
                     "isAuction" to isAuction, "auctionDurationDays" to auctionDurationDays,
-                    "location" to GeoPoint(sellerLocation.latitude, sellerLocation.longitude), "itemAddress" to itemAddress
+                    "location" to locationData, "itemAddress" to itemAddress
                 )
 
-                val result = functions.getHttpsCallable("submitProduct").call(data).await()
+                val result = callApi("submitProduct", data).await()
                 @Suppress("UNCHECKED_CAST")
                 val resultData = result.data as? Map<String, Any?>
                 val newProductId = resultData?.get("productId") as? String
@@ -404,6 +436,7 @@ class MainViewModel @Inject constructor(
         imageUris: List<Uri>, videoUri: Uri?, itemAddress: String?, location: Location,
         onResult: (Boolean, String) -> Unit
     ) {
+        if (auth.currentUser == null) return onResult(false, "You must be logged in to update a product.")
         viewModelScope.launch {
             try {
                 val imageUploadUrls = mutableListOf<String>()
@@ -430,15 +463,17 @@ class MainViewModel @Inject constructor(
                     }
                 }
 
+                val locationData = mapOf("latitude" to location.latitude, "longitude" to location.longitude)
+
                 val data = hashMapOf(
                     "productId" to productId,
                     "name" to name, "description" to description, "price" to price, "category" to category, "condition" to condition,
                     "imageUris" to imageUploadUrls, "videoUri" to videoUploadUrl,
                     "itemAddress" to itemAddress,
-                    "location" to GeoPoint(location.latitude, location.longitude)
+                    "location" to locationData
                 )
 
-                functions.getHttpsCallable("updateProduct").call(data).await()
+                callApi("updateProduct", data).await()
                 onResult(true, "Product updated successfully!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error updating product", e)
@@ -504,9 +539,7 @@ class MainViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                functions.getHttpsCallable("markListingAsSold")
-                    .call(mapOf("productId" to productId))
-                    .await()
+                callApi("markListingAsSold", mapOf("productId" to productId)).await()
                 onResult(true, "Listing marked as sold!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error marking product as sold", e)
@@ -521,9 +554,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun relistProduct(productId: String, onResult: (Boolean, String) -> Unit) {
+        if (auth.currentUser == null) return onResult(false, "You must be logged in to relist.")
         viewModelScope.launch {
             try {
-                functions.getHttpsCallable("relistProduct").call(mapOf("productId" to productId)).await()
+                callApi("relistProduct", mapOf("productId" to productId)).await()
                 onResult(true, "Listing has been relisted!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error relisting product", e)
@@ -637,10 +671,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun requestVerification(onResult: (Boolean, String) -> Unit) {
-        val currentUser = auth.currentUser ?: return onResult(false, "You must be logged in.")
+        if (auth.currentUser == null) return onResult(false, "You must be logged in.")
         viewModelScope.launch {
             try {
-                functions.getHttpsCallable("requestVerification").call().await()
+                callApi("requestVerification", emptyMap()).await()
                 onResult(true, "Verification request sent!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error requesting verification", e)
@@ -651,6 +685,7 @@ class MainViewModel @Inject constructor(
 
     // --- Admin ---
     fun fetchVerificationRequests() {
+        if (auth.currentUser == null) return
         _isLoadingVerificationRequests.value = true
         viewModelScope.launch {
             try {
@@ -667,11 +702,10 @@ class MainViewModel @Inject constructor(
     }
 
     fun approveVerification(userId: String, onResult: (Boolean, String) -> Unit) {
+        if (auth.currentUser == null) return
         viewModelScope.launch {
             try {
-                functions.getHttpsCallable("approveVerificationRequest")
-                    .call(mapOf("userId" to userId))
-                    .await()
+                callApi("approveVerificationRequest", mapOf("userId" to userId)).await()
                 _verificationRequests.value = _verificationRequests.value.filterNot { it.uid == userId }
                 onResult(true, "User verified successfully.")
             } catch (e: Exception) {
@@ -723,6 +757,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun listenForProductOffers(productId: String) {
+        if (auth.currentUser == null) return
         _isLoadingOffers.value = true
         offersForProductListener?.remove()
         offersForProductListener = firestore.collection("products").document(productId).collection("offers")
@@ -738,6 +773,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun updateOfferStatus(productId: String, offerId: String, status: String) {
+        if (auth.currentUser == null) return
         viewModelScope.launch {
             try {
                 firestore.collection("products").document(productId).collection("offers").document(offerId)
@@ -819,9 +855,7 @@ class MainViewModel @Inject constructor(
     fun incrementProductViewCount(productId: String) {
         viewModelScope.launch {
             try {
-                functions.getHttpsCallable("incrementProductViewCount")
-                    .call(mapOf("productId" to productId))
-                    .await()
+                callApi("incrementProductViewCount", mapOf("productId" to productId)).await()
             } catch (e: Exception) {
                 Log.w("MainViewModel", "Failed to increment view count for $productId", e)
             }
@@ -863,7 +897,7 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    // --- Payment ---
+    // --- Payment & Promotions ---
     fun createPaymentIntent(
         productId: String,
         isAuction: Boolean,
@@ -871,6 +905,7 @@ class MainViewModel @Inject constructor(
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
+        if (auth.currentUser == null) return onError("You must be logged in to make a payment.")
         viewModelScope.launch {
             try {
                 val data = hashMapOf(
@@ -878,7 +913,7 @@ class MainViewModel @Inject constructor(
                     "isAuction" to isAuction,
                     "auctionDurationDays" to auctionDurationDays
                 )
-                val result = functions.getHttpsCallable("createPaymentIntent").call(data).await()
+                val result = callApi("createPaymentIntent", data).await()
                 val clientSecret = (result.data as? Map<String, Any?>)?.get("clientSecret") as? String
                 if (clientSecret != null) onSuccess(clientSecret) else onError("Could not retrieve payment secret.")
             } catch (e: Exception) {
@@ -888,7 +923,50 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun createPromotionPaymentIntent(
+        promotionType: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        if (auth.currentUser == null) return onError("You must be logged in.")
+        viewModelScope.launch {
+            try {
+                val data = mapOf("promotionType" to promotionType)
+                val result = callApi("createPromotionPaymentIntent", data).await()
+                val clientSecret = (result.data as? Map<String, Any?>)?.get("clientSecret") as? String
+                if (clientSecret != null) {
+                    onSuccess(clientSecret)
+                } else {
+                    onError("Could not initialize promotion payment.")
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error creating promotion payment intent", e)
+                onError(e.message ?: "An unknown error occurred.")
+            }
+        }
+    }
+
+    fun confirmPromotion(
+        productId: String,
+        promotionType: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        if (auth.currentUser == null) return onResult(false, "You must be logged in.")
+        viewModelScope.launch {
+            try {
+                val data = mapOf("productId" to productId, "promotionType" to promotionType)
+                callApi("confirmPromotion", data).await()
+                onResult(true, "Promotion successful!")
+                fetchUserProfileAndProducts(auth.currentUser!!.uid)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error confirming promotion", e)
+                onResult(false, e.message ?: "Could not confirm promotion.")
+            }
+        }
+    }
+
     fun markProductAsPaid(productId: String, isAuction: Boolean, auctionDurationDays: Int, onResult: (Boolean, String) -> Unit) {
+        if (auth.currentUser == null) return onResult(false, "You must be logged in.")
         viewModelScope.launch {
             try {
                 val data = mapOf(
@@ -896,7 +974,7 @@ class MainViewModel @Inject constructor(
                     "isAuction" to isAuction,
                     "auctionDurationDays" to auctionDurationDays
                 )
-                functions.getHttpsCallable("markProductAsPaid").call(data).await()
+                callApi("markProductAsPaid", data).await()
                 onResult(true, "Listing activated!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error marking product as paid", e)
@@ -910,9 +988,8 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             _isGeneratingSuggestions.value = true
             try {
-                val result = functions.getHttpsCallable("getListingDetailsFromTitle")
-                    .call(mapOf("title" to title))
-                    .await()
+                val result = callApi("getListingDetailsFromTitle", mapOf("title" to title)).await()
+                @Suppress("UNCHECKED_CAST")
                 val suggestionsData = (result.data as? Map<String, Any?>)?.get("suggestions") as? Map<String, String>
                 if (suggestionsData != null) {
                     _aiSuggestions.value = AiSuggestions(
@@ -930,9 +1007,7 @@ class MainViewModel @Inject constructor(
 
     suspend fun geocodeAddress(address: String): Location? {
         return try {
-            val result = functions.getHttpsCallable("geocodeAddress")
-                .call(mapOf("address" to address))
-                .await()
+            val result = callApi("geocodeAddress", mapOf("address" to address)).await()
             @Suppress("UNCHECKED_CAST")
             val data = result.data as? Map<String, Double>
             data?.let {
@@ -950,6 +1025,44 @@ class MainViewModel @Inject constructor(
     fun clearAiSuggestions() {
         _aiSuggestions.value = null
     }
+
+    // --- Visual Search ---
+    fun performVisualSearch(imageUri: Uri) {
+        val currentUser = auth.currentUser ?: return
+        viewModelScope.launch {
+            _isProcessingVisualSearch.value = true
+            try {
+                val path = "visual_search_uploads/${currentUser.uid}_${System.currentTimeMillis()}.jpg"
+                val ref = storage.reference.child(path)
+                ref.putFile(imageUri).await()
+                val downloadUrl = ref.downloadUrl.await().toString()
+
+                val data = mapOf("imageUrl" to downloadUrl)
+                val result = callApi("visualSearch", data).await()
+
+                @Suppress("UNCHECKED_CAST")
+                val suggestions = (result.data as? Map<String, Any?>)?.get("suggestions") as? Map<String, String>
+                val query = suggestions?.get("searchQuery")
+                val category = suggestions?.get("category")
+
+                if (query != null && category != null) {
+                    _visualSearchSuggestion.value = Pair(query, category)
+                }
+
+                ref.delete().await()
+
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error performing visual search", e)
+            } finally {
+                _isProcessingVisualSearch.value = false
+            }
+        }
+    }
+
+    fun clearVisualSearchSuggestion() {
+        _visualSearchSuggestion.value = null
+    }
+
 
     // --- Seller Reviews ---
     fun fetchSellerReviews(sellerId: String) {
@@ -1043,7 +1156,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun sendMessage(recipientId: String, text: String) {
-        val message = ChatMessage(type = "text", text = text, senderId = auth.currentUser?.uid ?: "")
+        val currentUser = auth.currentUser ?: return
+        val message = ChatMessage(type = "text", text = text, senderId = currentUser.uid)
         sendMessageObject(recipientId, message, text)
     }
 
@@ -1056,11 +1170,12 @@ class MainViewModel @Inject constructor(
     }
 
     fun sendLocationMessage(recipientId: String, location: Location) {
+        val currentUser = auth.currentUser ?: return
         val geoPoint = GeoPoint(location.latitude, location.longitude)
         val message = ChatMessage(
             type = "location",
             location = geoPoint,
-            senderId = auth.currentUser?.uid ?: ""
+            senderId = currentUser.uid
         )
         sendMessageObject(recipientId, message, "📍 Shared a location")
     }
@@ -1098,6 +1213,7 @@ class MainViewModel @Inject constructor(
                     "lastMessage" to lastMessageText,
                     "lastActivity" to FieldValue.serverTimestamp()
                 ), SetOptions.merge()).await()
+
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error sending message object", e)
             }
@@ -1110,11 +1226,12 @@ class MainViewModel @Inject constructor(
             _chatbotMessages.value += ChatbotMessage(text = prompt, role = "user")
             _chatbotMessages.value += ChatbotMessage(text = "", role = "model", isThinking = true)
             try {
-                val result = functions.getHttpsCallable("askGemini").call(mapOf("prompt" to prompt)).await()
+                val result = callApi("askGemini", mapOf("prompt" to prompt)).await()
                 val reply = (result.data as? Map<String, Any?>)?.get("reply") as? String ?: "Sorry, I couldn't process that."
                 val modelMessage = ChatbotMessage(text = reply, role = "model")
                 _chatbotMessages.value = _chatbotMessages.value.dropLast(1) + modelMessage
             } catch (e: Exception) {
+                Log.e("MainViewModel", "Error in sendChatbotMessage", e)
                 val errorMessage = ChatbotMessage(text = "Error: ${e.message}", role = "model")
                 _chatbotMessages.value = _chatbotMessages.value.dropLast(1) + errorMessage
             }
@@ -1176,7 +1293,7 @@ class MainViewModel @Inject constructor(
         if (auth.currentUser == null) return onResult(false, "You must be logged in.")
         viewModelScope.launch {
             try {
-                val result = functions.getHttpsCallable("clearAllNotifications").call().await()
+                val result = callApi("clearAllNotifications", emptyMap()).await()
                 val message = (result.data as? Map<String, Any?>)?.get("message") as? String ?: "Notifications cleared."
                 onResult(true, message)
             } catch (e: Exception) {
@@ -1229,7 +1346,7 @@ class MainViewModel @Inject constructor(
                     "targetProductId" to targetProductId,
                     "cashTopUp" to cashTopUp
                 )
-                functions.getHttpsCallable("proposeProductSwap").call(data).await()
+                callApi("proposeProductSwap", data).await()
                 onResult(true, "Swap proposal sent successfully!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error proposing swap", e)
@@ -1246,7 +1363,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val data = hashMapOf("swapId" to swapId, "response" to response)
-                functions.getHttpsCallable("respondToSwap").call(data).await()
+                callApi("respondToSwap", data).await()
                 onResult(true, "Response sent successfully.")
                 fetchSwaps()
             } catch (e: Exception) {
@@ -1280,7 +1397,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val data = hashMapOf("productId" to productId, "amount" to amount)
-                functions.getHttpsCallable("placeBid").call(data).await()
+                callApi("placeBid", data).await()
                 onResult(true, "Bid placed successfully!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error placing bid", e)
@@ -1304,7 +1421,7 @@ class MainViewModel @Inject constructor(
                     "maxPrice" to maxPrice.toDoubleOrNull(),
                     "condition" to condition.ifBlank { null }
                 )
-                functions.getHttpsCallable("saveSearch").call(data).await()
+                callApi("saveSearch", data).await()
                 onResult(true, "Search saved!")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error saving search", e)
@@ -1373,18 +1490,6 @@ class MainViewModel @Inject constructor(
     private fun deg2rad(deg: Double): Double {
         return deg * (PI / 180)
     }
-
-    private fun getStoragePathFromUrl(url: String): String? {
-        return try {
-            val decodedUrl = URLDecoder.decode(url, "UTF-8")
-            val pathWithToken = decodedUrl.substringAfter("/o/").substringBefore("?alt=media")
-            pathWithToken
-        } catch (e: Exception) {
-            Log.e("MainViewModel", "Could not parse storage path from URL: $url", e)
-            null
-        }
-    }
-
 
     // --- Cleanup ---
     private fun resetDetailScreenState() {

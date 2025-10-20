@@ -2,6 +2,7 @@ package com.gari.yahdsell2.navigation
 
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -18,13 +19,41 @@ fun AppNavigation(toggleTheme: () -> Unit) {
     val viewModel: MainViewModel = hiltViewModel()
     val userState by viewModel.userState.collectAsState()
 
-    // Determine the start destination based on whether the user is logged in
-    val startDestination = when (userState) {
-        is UserState.Authenticated -> Screen.Main.route
-        else -> Screen.Login.route
-    }
+    // The NavHost's start destination will now be determined by the user's auth state.
+    // However, we will use a "blank" loading screen as the technical start destination
+    // to avoid screen flicker while the auth state is being resolved.
+    val startDestination = "auth_handler"
 
     NavHost(navController = navController, startDestination = startDestination) {
+
+        // This composable acts as a gatekeeper. It checks the auth state and navigates
+        // to the correct screen (Login or Main) immediately.
+        composable("auth_handler") {
+            LaunchedEffect(userState) {
+                when (userState) {
+                    is UserState.Authenticated -> {
+                        navController.navigate(Screen.Main.route) {
+                            popUpTo("auth_handler") { inclusive = true }
+                        }
+                    }
+                    is UserState.Unauthenticated -> {
+                        navController.navigate(Screen.Login.route) {
+                            popUpTo("auth_handler") { inclusive = true }
+                        }
+                    }
+                    is UserState.Loading -> {
+                        // While loading, it shows a blank screen, which is fine
+                        // as it's a very brief state on app open.
+                    }
+                    is UserState.Error -> {
+                        navController.navigate(Screen.Login.route) {
+                            popUpTo("auth_handler") { inclusive = true }
+                        }
+                    }
+                }
+            }
+        }
+
         composable(Screen.Login.route) {
             LoginScreen(navController = navController, viewModel = viewModel)
         }
@@ -106,4 +135,3 @@ fun AppNavigation(toggleTheme: () -> Unit) {
         }
     }
 }
-

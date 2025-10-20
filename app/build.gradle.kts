@@ -117,6 +117,7 @@ dependencies {
     implementation(libs.coilCompose)
     implementation(libs.media3Ui)
     implementation(libs.media3Exoplayer)
+    implementation("androidx.media3:media3-session:1.3.1") // For video player lifecycle
     implementation(libs.accompanistSwiperefresh)
     implementation(libs.gson)
 

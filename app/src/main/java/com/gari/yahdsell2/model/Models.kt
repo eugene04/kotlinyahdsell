@@ -34,7 +34,8 @@ data class Product(
     val sellerIsVerified: Boolean = false,
     val sellerAverageRating: Double = 0.0,
     val sellerLocation: @RawValue GeoPoint? = null,
-    val itemAddress: String? = null, // ✅ ADDED: For specific item address
+    val geohash: String? = null,
+    val itemAddress: String? = null,
     val distanceKm: Double? = null,
     @get:PropertyName("isSold") val isSold: Boolean = false,
     @get:PropertyName("isPaid") val isPaid: Boolean = false,
@@ -43,7 +44,9 @@ data class Product(
     @ServerTimestamp val paidAt: Date? = null,
     @ServerTimestamp val soldAt: Date? = null,
     @ServerTimestamp val expiresAt: Date? = null,
-    val viewCount: Int = 0
+    val viewCount: Int = 0,
+    @get:PropertyName("isFeatured") val isFeatured: Boolean = false,
+    @ServerTimestamp val lastBumpedAt: Date? = null
 ) : Parcelable
 
 @Parcelize
@@ -108,7 +111,7 @@ data class ChatMessage(
     val text: String = "",
     val imageUrl: String? = null,
     val videoUrl: String? = null,
-    val location: @RawValue GeoPoint? = null, // ✅ ADDED: For location sharing
+    val location: @RawValue GeoPoint? = null,
     val senderId: String = "",
     @ServerTimestamp val timestamp: Date? = null
 )

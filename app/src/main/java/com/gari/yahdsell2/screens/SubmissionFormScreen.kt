@@ -2,8 +2,12 @@ package com.gari.yahdsell2.screens
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
 import android.location.Location
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.provider.MediaStore
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -35,8 +39,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
@@ -44,12 +50,15 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
+import com.gari.yahdsell2.BuildConfig
 import com.gari.yahdsell2.MainViewModel
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.navigation.Screen
 import com.google.android.gms.location.LocationServices
 import com.google.gson.Gson
 import kotlinx.coroutines.launch
+import java.io.File
+import java.util.concurrent.TimeUnit
 
 private enum class VerifyAddressState { IDLE, VERIFYING, SUCCESS, ERROR }
 
@@ -88,12 +97,47 @@ fun SubmissionFormScreen(
     var verifiedAddressLocation by remember { mutableStateOf<Location?>(null) }
     var verifyAddressState by remember { mutableStateOf(VerifyAddressState.IDLE) }
 
+    var showImageSourceDialog by remember { mutableStateOf(false) }
+    var showVideoSourceDialog by remember { mutableStateOf(false) }
+    var tempCameraImageUri by remember { mutableStateOf<Uri?>(null) }
+    var tempCameraVideoUri by remember { mutableStateOf<Uri?>(null) }
+
 
     val productToEdit by viewModel.productToEdit.collectAsState()
     val aiSuggestions by viewModel.aiSuggestions.collectAsState()
     val isGeneratingSuggestions by viewModel.isGeneratingSuggestions.collectAsState()
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+
+    // --- LAUNCHERS ---
+
+    // Image Launchers
+    val imageGalleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        imageUris = (imageUris + uris).take(5)
+    }
+    val imageCameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            tempCameraImageUri?.let { imageUris = (imageUris + it).take(5) }
+        }
+    }
+
+    // Video Launchers
+    val videoGalleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let {
+            if (getVideoDuration(context, it) <= 30) {
+                videoUri = it
+            } else {
+                Toast.makeText(context, "Video must be 30 seconds or less.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val videoCameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { success ->
+        if (success) {
+            videoUri = tempCameraVideoUri
+        }
+    }
+
+    // Permission Launchers
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -108,6 +152,14 @@ fun SubmissionFormScreen(
             Toast.makeText(context, "Location permission is required to list an item.", Toast.LENGTH_LONG).show()
         }
     }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            Toast.makeText(context, "Camera permission is required.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
 
     // A helper function to populate form fields from a Product object
     val populateFields: (Product) -> Unit = { product ->
@@ -178,13 +230,53 @@ fun SubmissionFormScreen(
     val conditionOptions = listOf("New", "Used - Like New", "Used - Good", "Used - Fair")
     val auctionDurationOptions = listOf(1, 3, 5, 7)
 
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
-        imageUris = (imageUris + uris).take(5)
+    // --- DIALOGS ---
+    if (showImageSourceDialog) {
+        MediaSourceDialog(
+            title = "Add Image",
+            onDismiss = { showImageSourceDialog = false },
+            onTakePhoto = {
+                showImageSourceDialog = false
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                val newUri = createImageUri(context, "images")
+                tempCameraImageUri = newUri
+                imageCameraLauncher.launch(newUri)
+            },
+            onChooseFromGallery = {
+                showImageSourceDialog = false
+                imageGalleryLauncher.launch("image/*")
+            }
+        )
     }
 
-    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        videoUri = uri
+    if (showVideoSourceDialog) {
+        MediaSourceDialog(
+            title = "Add Video (max 30s)",
+            onDismiss = { showVideoSourceDialog = false },
+            onTakePhoto = {
+                showVideoSourceDialog = false
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                val newUri = createImageUri(context, "videos")
+                tempCameraVideoUri = newUri
+
+                // The CaptureVideo contract does not support passing extras like duration limit directly.
+                // This intent setup is a hint to the camera app.
+                val intent = Intent(MediaStore.ACTION_VIDEO_CAPTURE).apply {
+                    putExtra(MediaStore.EXTRA_DURATION_LIMIT, 30)
+                    putExtra(MediaStore.EXTRA_OUTPUT, newUri)
+                }
+
+                tempCameraVideoUri?.let { uri ->
+                    videoCameraLauncher.launch(uri)
+                }
+            },
+            onChooseFromGallery = {
+                showVideoSourceDialog = false
+                videoGalleryLauncher.launch("video/*")
+            }
+        )
     }
+
 
     Scaffold(
         topBar = {
@@ -205,7 +297,7 @@ fun SubmissionFormScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            // Listing Type Selection (Disabled in edit mode)
+            // ... (All cards: Listing Type, Product Details, Categorization, Location)
             Card(elevation = CardDefaults.cardElevation(4.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Listing Type", style = MaterialTheme.typography.titleMedium)
@@ -339,16 +431,17 @@ fun SubmissionFormScreen(
                 }
             }
 
-
             Spacer(Modifier.height(16.dp))
-
-            // Media
+            // Media Card
             Card(elevation = CardDefaults.cardElevation(4.dp), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Media", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
-                    Button(onClick = { imagePicker.launch("image/*") }) {
-                        Icon(Icons.Default.AddAPhoto, null); Spacer(Modifier.width(8.dp)); Text("Choose Images (${imageUris.size}/5)")
+
+                    // Updated Image Button
+                    Button(onClick = { showImageSourceDialog = true }) {
+                        Icon(Icons.Default.AddAPhoto, null); Spacer(Modifier.width(8.dp)); Text("Add Images (${imageUris.size}/5)")
                     }
+
                     if (imageUris.isNotEmpty()) {
                         LazyRow(modifier = Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             itemsIndexed(imageUris) { index, uri ->
@@ -362,8 +455,9 @@ fun SubmissionFormScreen(
                         }
                     }
 
-                    Button(onClick = { videoPicker.launch("video/*") }) {
-                        Icon(Icons.Default.Videocam, null); Spacer(Modifier.width(8.dp)); Text(if (videoUri != null) "Change Video" else "Choose Video (Optional)")
+                    // Updated Video Button
+                    Button(onClick = { showVideoSourceDialog = true }) {
+                        Icon(Icons.Default.Videocam, null); Spacer(Modifier.width(8.dp)); Text(if (videoUri != null) "Change Video" else "Add Video (Optional)")
                     }
 
                     videoUri?.let { uri ->
@@ -375,7 +469,7 @@ fun SubmissionFormScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // Location Status and Submit Button
+            // ... (Location status and submit button)
             if (locationOption == "current" && userLocation == null && !isEditMode) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -482,6 +576,75 @@ fun SubmissionFormScreen(
             })
         }
     }
+}
+
+private fun createImageUri(context: Context, type: String): Uri {
+    val directory = File(context.cacheDir, type)
+    if (!directory.exists()) directory.mkdirs()
+    val file = File(directory, "${System.currentTimeMillis()}.jpg")
+    return FileProvider.getUriForFile(
+        context,
+        "${BuildConfig.APPLICATION_ID}.provider",
+        file
+    )
+}
+
+private fun getVideoDuration(context: Context, uri: Uri): Long {
+    return try {
+        val retriever = MediaMetadataRetriever()
+        retriever.setDataSource(context, uri)
+        val time = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        retriever.release()
+        val durationMs = time?.toLongOrNull() ?: 0L
+        TimeUnit.MILLISECONDS.toSeconds(durationMs)
+    } catch (e: Exception) {
+        0L
+    }
+}
+
+@Composable
+fun MediaSourceDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onChooseFromGallery: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                Button(onClick = onTakePhoto, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.PhotoCamera, "Take Photo")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Take Photo/Video")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onChooseFromGallery, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Image, "Choose from Gallery")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose from Gallery")
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
 }
 
 @Composable

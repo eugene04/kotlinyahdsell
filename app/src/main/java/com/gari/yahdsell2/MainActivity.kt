@@ -51,4 +51,3 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-

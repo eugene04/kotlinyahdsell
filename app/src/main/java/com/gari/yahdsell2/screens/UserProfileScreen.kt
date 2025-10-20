@@ -2,6 +2,7 @@ package com.gari.yahdsell2.screens
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke // ✅ ADDED
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -29,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
@@ -38,6 +41,8 @@ import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.model.UserProfile
 import com.gari.yahdsell2.navigation.Screen
 import com.google.gson.Gson
+import com.stripe.android.paymentsheet.PaymentSheetResult
+import com.stripe.android.paymentsheet.rememberPaymentSheet
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -61,6 +66,9 @@ fun UserProfileScreen(
         mutableStateOf("Active")
     }
 
+    var productToPromote by remember { mutableStateOf<Product?>(null) }
+
+
     LaunchedEffect(userId, isOwnProfile) {
         if (userId != null) {
             viewModel.fetchUserProfileAndProducts(userId)
@@ -68,6 +76,14 @@ fun UserProfileScreen(
                 viewModel.checkAdminStatus()
             }
         }
+    }
+
+    productToPromote?.let { product ->
+        PromotionDialog(
+            product = product,
+            viewModel = viewModel,
+            onDismiss = { productToPromote = null }
+        )
     }
 
     val filteredProducts = remember(userProducts, activeTab) {
@@ -89,7 +105,6 @@ fun UserProfileScreen(
                 title = { Text(profileUser?.displayName ?: "Profile") },
                 navigationIcon = {
                     val currentRoute = navController.currentBackStackEntry?.destination?.route
-                    // Only show back arrow if not on the main profile tab destination
                     if (currentRoute != Screen.UserProfile.route) {
                         IconButton(onClick = { navController.popBackStack() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -171,6 +186,9 @@ fun UserProfileScreen(
                                         val productJson = Uri.encode(Gson().toJson(product))
                                         navController.navigate(Screen.Submit.createRoute(productJson))
                                     }
+                                },
+                                onPromote = {
+                                    productToPromote = product
                                 }
                             )
                         }
@@ -383,7 +401,8 @@ fun UserProfileProductCard(
     isOwnListing: Boolean,
     onCardClick: () -> Unit,
     onMarkAsSold: () -> Unit,
-    onRelist: () -> Unit
+    onRelist: () -> Unit,
+    onPromote: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onCardClick),
@@ -420,10 +439,11 @@ fun UserProfileProductCard(
             }
 
             if (isOwnListing) {
-                Box(
+                Row(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(8.dp)
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (product.isSold) {
                         Button(
@@ -434,12 +454,23 @@ fun UserProfileProductCard(
                             Text("Relist", style = MaterialTheme.typography.labelSmall)
                         }
                     } else if (product.expiresAt?.after(Date()) == true) { // Active
+                        if (product.auctionInfo == null) {
+                            OutlinedButton(
+                                onClick = onMarkAsSold,
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text("Mark Sold", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                         Button(
-                            onClick = onMarkAsSold,
+                            onClick = onPromote,
                             contentPadding = PaddingValues(horizontal = 12.dp),
                             shape = MaterialTheme.shapes.small
                         ) {
-                            Text("Mark Sold", style = MaterialTheme.typography.labelSmall)
+                            Icon(Icons.Default.RocketLaunch, null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Promote", style = MaterialTheme.typography.labelSmall)
                         }
                     } else { // Expired
                         Button(
@@ -452,6 +483,116 @@ fun UserProfileProductCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun PromotionDialog(
+    product: Product,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var promotionType by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+
+    val onPaymentResultCallback: (PaymentSheetResult) -> Unit = { paymentResult ->
+        isLoading = false
+        when (paymentResult) {
+            is PaymentSheetResult.Completed -> {
+                promotionType?.let {
+                    viewModel.confirmPromotion(product.id, it) { success, message ->
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                        if (success) onDismiss()
+                    }
+                }
+            }
+            is PaymentSheetResult.Canceled -> Toast.makeText(context, "Payment canceled.", Toast.LENGTH_SHORT).show()
+            is PaymentSheetResult.Failed -> Toast.makeText(context, paymentResult.error.localizedMessage, Toast.LENGTH_LONG).show()
+        }
+        promotionType = null // Reset for next time
+    }
+
+    val paymentSheet = rememberPaymentSheet(paymentResultCallback = onPaymentResultCallback)
+
+    val launchPayment: (String) -> Unit = { type ->
+        isLoading = true
+        promotionType = type
+        viewModel.createPromotionPaymentIntent(
+            promotionType = type,
+            onSuccess = { clientSecret ->
+                paymentSheet.presentWithPaymentIntent(clientSecret)
+            },
+            onError = { error ->
+                isLoading = false
+                Toast.makeText(context, error, Toast.LENGTH_LONG).show()
+            }
+        )
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(shape = RoundedCornerShape(16.dp)) {
+            if (isLoading) {
+                Box(modifier = Modifier.padding(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(Icons.Default.RocketLaunch, "Promote", modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Promote Your Listing", style = MaterialTheme.typography.headlineSmall)
+                    Text("Get more views and sell faster!", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(24.dp))
+
+                    PromotionOption(
+                        title = "Bump to Top",
+                        description = "Move your listing to the top of search results for 24 hours.",
+                        price = "$1.00",
+                        onClick = { launchPayment("bump") },
+                        isFeatured = false
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    PromotionOption(
+                        title = "Feature Listing",
+                        description = "Mark your listing with a 'Featured' badge for the entire listing duration.",
+                        price = "$5.00",
+                        onClick = { launchPayment("feature") },
+                        isFeatured = true
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PromotionOption(
+    title: String,
+    description: String,
+    price: String,
+    onClick: () -> Unit,
+    isFeatured: Boolean
+) {
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        border = BorderStroke(1.dp, if (isFeatured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.width(16.dp))
+            Text(price, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         }
     }
 }

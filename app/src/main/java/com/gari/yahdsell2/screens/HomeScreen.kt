@@ -2,7 +2,9 @@ package com.gari.yahdsell2.screens
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.location.Location
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,9 +47,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
+import com.gari.yahdsell2.BuildConfig
 import com.gari.yahdsell2.MainViewModel
 import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.model.Product
@@ -57,7 +61,9 @@ import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.NumberFormat
+import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
 
@@ -76,6 +82,8 @@ fun HomeScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsState()
     val userLocation by viewModel.userLocation.collectAsState()
+    val visualSearchSuggestion by viewModel.visualSearchSuggestion.collectAsState()
+    val isProcessingVisualSearch by viewModel.isProcessingVisualSearch.collectAsState()
 
 
     var searchQuery by remember { mutableStateOf("") }
@@ -85,9 +93,57 @@ fun HomeScreen(
     var maxPrice by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
+    var showImageSourceDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    var tempCameraImageUri by remember { mutableStateOf<Uri?>(null) }
+
+
+    // --- LAUNCHERS ---
+
+    // Launcher for picking an image from the gallery
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+        onResult = { uri: Uri? ->
+            uri?.let { viewModel.performVisualSearch(it) }
+        }
+    )
+
+    // Launcher for taking a picture with the camera
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+        onResult = { success: Boolean ->
+            if (success) {
+                tempCameraImageUri?.let { viewModel.performVisualSearch(it) }
+            }
+        }
+    )
+
+    // Launcher for requesting camera permission
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            // Permission granted, now launch the camera
+            val newUri = createImageUri(context)
+            tempCameraImageUri = newUri
+            cameraLauncher.launch(newUri)
+        } else {
+            Toast.makeText(context, "Camera permission is required to take a photo.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+
+    // Effect to listen for results from the ViewModel
+    LaunchedEffect(visualSearchSuggestion) {
+        visualSearchSuggestion?.let { (query, category) ->
+            searchQuery = query
+            selectedCategory = category
+            Toast.makeText(context, "Search updated based on your image!", Toast.LENGTH_SHORT).show()
+            viewModel.clearVisualSearchSuggestion()
+        }
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -95,9 +151,7 @@ fun HomeScreen(
         if (isGranted) {
             fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
                 viewModel.updateUserLocation(location)
-                location?.let {
-                    viewModel.fetchProducts(it.latitude, it.longitude)
-                }
+                viewModel.fetchProducts(location?.latitude, location?.longitude)
             }
         } else {
             viewModel.updateUserLocation(null)
@@ -105,9 +159,13 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
-        locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+    LaunchedEffect(userState) {
+        if (userState !is UserState.Loading) {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
     }
+
+    // --- DIALOGS & BOTTOM SHEETS ---
 
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
@@ -136,6 +194,23 @@ fun HomeScreen(
             }
         )
     }
+
+    if (showImageSourceDialog) {
+        ImageSourceSelectionDialog(
+            onDismiss = { showImageSourceDialog = false },
+            onTakePhoto = {
+                showImageSourceDialog = false
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            },
+            onChooseFromGallery = {
+                showImageSourceDialog = false
+                galleryLauncher.launch("image/*")
+            }
+        )
+    }
+
+
+    // --- UI ---
 
     Scaffold(
         modifier = modifier,
@@ -240,6 +315,22 @@ fun HomeScreen(
                     ) { success, message ->
                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                     }
+                },
+                onVisualSearchClick = {
+                    if ((userState as? UserState.Authenticated)?.user != null) {
+                        showImageSourceDialog = true
+                    } else {
+                        Toast.makeText(context, "You must be logged in to use Visual Search.", Toast.LENGTH_SHORT).show()
+                        navController.navigate(Screen.Login.route)
+                    }
+                },
+                isVisualSearchLoading = isProcessingVisualSearch,
+                onClearSearch = {
+                    searchQuery = ""
+                    selectedCategory = "All"
+                    minPrice = ""
+                    maxPrice = ""
+                    selectedCondition = "Any Condition"
                 }
             )
 
@@ -283,13 +374,61 @@ fun HomeScreen(
     }
 }
 
+// --- HELPER COMPOSABLES & FUNCTIONS ---
+
+private fun createImageUri(context: Context): Uri {
+    val imageFile = File(context.cacheDir, "camera_image_${System.currentTimeMillis()}.jpg")
+    return FileProvider.getUriForFile(
+        context,
+        "${BuildConfig.APPLICATION_ID}.provider",
+        imageFile
+    )
+}
+
+@Composable
+fun ImageSourceSelectionDialog(
+    onDismiss: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onChooseFromGallery: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Visual Search") },
+        text = { Text("How would you like to find an item?") },
+        confirmButton = {
+            Column(Modifier.fillMaxWidth()) {
+                Button(onClick = onTakePhoto, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = "Take Photo")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Take Photo")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onChooseFromGallery, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Image, contentDescription = "Choose from Gallery")
+                    Spacer(Modifier.width(8.dp))
+                    Text("Choose from Gallery")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+
 @Composable
 fun SearchBarWithFilter(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onFilterClick: () -> Unit,
     isFilterActive: Boolean,
-    onSaveSearch: () -> Unit
+    onSaveSearch: () -> Unit,
+    onVisualSearchClick: () -> Unit,
+    isVisualSearchLoading: Boolean,
+    onClearSearch: () -> Unit
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
     Row(
@@ -303,7 +442,26 @@ fun SearchBarWithFilter(
             value = searchQuery,
             onValueChange = onSearchQueryChange,
             label = { Text("Search products...") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+            leadingIcon = {
+                IconButton(onClick = onVisualSearchClick, enabled = !isVisualSearchLoading) {
+                    if (isVisualSearchLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    } else {
+                        Icon(Icons.Default.PhotoCamera, contentDescription = "Visual Search")
+                    }
+                }
+            },
+            trailingIcon = {
+                if (searchQuery.isNotBlank()) {
+                    IconButton(onClick = onClearSearch) {
+                        Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                    }
+                } else {
+                    IconButton(onClick = { keyboardController?.hide() }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    }
+                }
+            },
             modifier = Modifier.weight(1f),
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),

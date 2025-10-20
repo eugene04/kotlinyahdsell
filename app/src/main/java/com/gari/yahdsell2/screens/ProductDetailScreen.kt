@@ -83,6 +83,8 @@ fun ProductDetailScreen(
     var showOfferDialog by remember { mutableStateOf(false) }
     var showSwapDialog by remember { mutableStateOf(false) }
     var showBidDialog by remember { mutableStateOf(false) }
+    var showPromotionDialog by remember { mutableStateOf(false) }
+
 
     val currentUser = (userState as? UserState.Authenticated)?.user
 
@@ -144,6 +146,16 @@ fun ProductDetailScreen(
         )
     }
 
+    if (showPromotionDialog) {
+        product?.let {
+            PromotionDialog(
+                product = it,
+                viewModel = viewModel,
+                onDismiss = { showPromotionDialog = false }
+            )
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -172,7 +184,8 @@ fun ProductDetailScreen(
                         }
                     },
                     onManageOffers = { navController.navigate(Screen.Offers.createRoute(p.id, p.name)) },
-                    onEdit = { navController.navigate(Screen.EditProduct.createRoute(p.id)) }
+                    onEdit = { navController.navigate(Screen.EditProduct.createRoute(p.id)) },
+                    onPromote = { showPromotionDialog = true }
                 )
             }
         }
@@ -760,7 +773,8 @@ fun ProductActionBar(
     onPlaceBid: () -> Unit,
     onChat: () -> Unit,
     onManageOffers: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onPromote: () -> Unit
 ) {
     val isAuction = product.auctionInfo != null
     val isAuctionActive = product.auctionInfo?.endTime?.after(Date()) == true
@@ -780,6 +794,14 @@ fun ProductActionBar(
                     }
                     Button(onClick = onManageOffers, modifier = Modifier.weight(1f)) {
                         Text("Manage")
+                    }
+                }
+                if (!product.isSold && product.expiresAt?.after(Date()) == true) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onPromote, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.RocketLaunch, null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text("Promote Listing")
                     }
                 }
             } else if (isAuction) {

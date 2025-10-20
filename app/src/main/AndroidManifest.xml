@@ -6,8 +6,10 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- ✅ ADDED: Required for posting notifications on Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- ✅ ADDED: Permission to use the camera hardware -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
 
     <application
@@ -26,7 +28,6 @@
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyCB8UI6puDzs7NHrGN2eCHd2kdrqN8ieZc" />
 
-        <!-- ✅ ADDED: A default icon for notifications -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@drawable/ic_stat_name" />
@@ -43,7 +44,6 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ ADDED: The service that will listen for incoming push notifications -->
         <service
             android:name=".services.MyFirebaseMessagingService"
             android:exported="false">
@@ -52,6 +52,18 @@
             </intent-filter>
         </service>
 
+        <!-- ✅ ADDED: FileProvider for securely sharing file URIs with the camera app -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 
 </manifest>
+
