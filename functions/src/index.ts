@@ -179,7 +179,6 @@ export const publicApi = onCall(
 
                     // 1. Local Query (if location is available)
                     if (hasBuyerLocation) {
-                        // Geohash precision 5 is ~5km x 5km. We query neighbors to cover a wider area.
                         const hash = geohash.encode(buyerLat!, buyerLon!, 5);
                         const neighbors = geohash.neighbors(hash);
                         
@@ -187,8 +186,10 @@ export const publicApi = onCall(
                             ...[hash, ...neighbors].map(h => 
                                 activeProductsQuery
                                     .where("geohash", ">=", h)
-                                    .where("geohash", "<", h + "~") // '~' is the last character in the geohash alphabet
-                                    .limit(100) // Limit per geohash box to avoid fetching too much
+                                    .where("geohash", "<", h + "~")
+                                    .orderBy("geohash") // Firestore requires ordering by the range filter field first
+                                    .orderBy("expiresAt", "desc") // ✅ FIX: Also sort local results by newness
+                                    .limit(100)
                                     .get()
                             )
                         );
@@ -198,7 +199,7 @@ export const publicApi = onCall(
                     queries.push(
                         activeProductsQuery
                             .orderBy("expiresAt", "desc")
-                            .limit(hasBuyerLocation ? 200 : 500) // Fetch more if it's the only query
+                            .limit(hasBuyerLocation ? 200 : 500)
                             .get()
                     );
                     
@@ -215,7 +216,7 @@ export const publicApi = onCall(
 
                     const allProducts = Array.from(productMap.values());
                     
-                    // 3. Scoring (same as before)
+                    // 3. Scoring
                     const ratingWeight = 0.6, distanceWeight = 0.4, maxDistanceKm = 100;
                     
                     allProducts.forEach((prod) => {
@@ -236,7 +237,7 @@ export const publicApi = onCall(
                         prod.score = score;
                     });
                     
-                    // 4. Promotion Ranking (same as before)
+                    // 4. Promotion Ranking
                     const featured: any[] = [];
                     const bumped: any[] = [];
                     const regular: any[] = [];
