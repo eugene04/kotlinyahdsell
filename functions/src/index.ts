@@ -9,9 +9,9 @@ import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from "firebas
 import { CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import Stripe from "stripe";
+import * as geohash from "ngeohash";
 
 // --- Define Parameters for Secrets ---
-// ✅ FIXED: Standardized all secrets to use the defineSecret method.
 const STRIPE_SECRET_KEY = defineSecret("STRIPE_SECRET_KEY");
 const GOOGLE_MAPS_API_KEY = defineSecret("GOOGLE_MAPS_API_KEY");
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
@@ -21,13 +21,18 @@ const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const LISTING_DURATION_DAYS = 7;
 const GRACE_PERIOD_DAYS = 7;
 const PRODUCT_CATEGORIES_FOR_AI = [ "Electronics", "Clothing & Apparel", "Home & Garden", "Furniture", "Vehicles", "Books, Movies & Music", "Collectibles & Art", "Sports & Outdoors", "Toys & Hobbies", "Baby & Kids", "Health & Beauty", "Other" ];
+const PROMOTION_PRICES = {
+    bump: 100, // $1.00
+    feature: 500, // $5.00
+};
+
 
 // Initialize Firebase Admin SDK
 admin.initializeApp();
 const db = getFirestore();
 const bucket = getStorage().bucket();
 
-// --- Helper Functions (No changes here) ---
+// --- Helper Functions ---
 
 async function storeNotificationRecord(recipientId: string, notificationPayload: { title: string; body: string; type: string; data: any; }) {
   if (!recipientId) {
@@ -109,27 +114,159 @@ function getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon
   return R * c;
 }
 
-// --- Consolidated API Function ---
+async function getSafeMeetupSuggestions(latitude: number, longitude: number): Promise<string> {
+    const apiKey = GOOGLE_MAPS_API_KEY.value();
+    if (!apiKey) {
+        logger.error("Google Maps API Key not available for safe spot search.");
+        return "";
+    }
 
-export const api = onCall(
+    const radius = 5000; // 5km radius
+    const types = "police|library"; // Search for police stations OR libraries
+    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=${radius}&type=${types}&key=${apiKey}`;
+
+    try {
+        const response = await axios.get(url);
+        const { results, status } = response.data;
+
+        if (status !== "OK" || !results || results.length === 0) {
+            logger.log("No safe meetup spots found nearby.");
+            return "";
+        }
+
+        const suggestions = results.slice(0, 3).map((place: any, index: number) =>
+            `${index + 1}. ${place.name} (${place.vicinity})`
+        ).join("\n"); 
+
+        if (suggestions) {
+            return `For your safety, consider meeting at a public location. Here are some nearby suggestions:\n${suggestions}`;
+        }
+        return "";
+    } catch (error) {
+        logger.error("Error fetching safe meetup spots from Google Places API:", error);
+        return "";
+    }
+}
+
+
+// --- Public API Function ---
+export const publicApi = onCall(
     {
-        // ✅ FIXED: Added GEMINI_API_KEY to the list of required secrets.
-        secrets: [STRIPE_SECRET_KEY, GOOGLE_MAPS_API_KEY, GEMINI_API_KEY],
+        secrets: [GOOGLE_MAPS_API_KEY, GEMINI_API_KEY, STRIPE_SECRET_KEY],
         cpu: 1,
         concurrency: 80,
         minInstances: 0,
+        enforceAppCheck: false,
     },
     async (request: CallableRequest) => {
         const { action, data } = request.data;
 
-        // Helper to check for authentication
-        const checkAuth = () => {
-            if (!request.auth) {
-                throw new HttpsError("unauthenticated", "You must be logged in to perform this action.");
-            }
-        };
-
         switch (action) {
+            case "getRankedProducts": {
+                const { latitude: buyerLat, longitude: buyerLon } = data;
+                const hasBuyerLocation = (typeof buyerLat === "number" && typeof buyerLon === "number");
+                const now = admin.firestore.Timestamp.now();
+                const twentyFourHoursAgo = admin.firestore.Timestamp.fromMillis(now.toMillis() - (24 * 60 * 60 * 1000));
+
+                try {
+                    const productCollection = db.collection("products");
+                    const activeProductsQuery = productCollection
+                        .where("isPaid", "==", true)
+                        .where("isSold", "==", false)
+                        .where("expiresAt", ">", now);
+
+                    let queries = [];
+
+                    // 1. Local Query (if location is available)
+                    if (hasBuyerLocation) {
+                        // Geohash precision 5 is ~5km x 5km. We query neighbors to cover a wider area.
+                        const hash = geohash.encode(buyerLat!, buyerLon!, 5);
+                        const neighbors = geohash.neighbors(hash);
+                        
+                        queries.push(
+                            ...[hash, ...neighbors].map(h => 
+                                activeProductsQuery
+                                    .where("geohash", ">=", h)
+                                    .where("geohash", "<", h + "~") // '~' is the last character in the geohash alphabet
+                                    .limit(100) // Limit per geohash box to avoid fetching too much
+                                    .get()
+                            )
+                        );
+                    }
+
+                    // 2. Global Query (for freshness and discovery)
+                    queries.push(
+                        activeProductsQuery
+                            .orderBy("expiresAt", "desc")
+                            .limit(hasBuyerLocation ? 200 : 500) // Fetch more if it's the only query
+                            .get()
+                    );
+                    
+                    const querySnapshots = await Promise.all(queries);
+                    const productMap = new Map<string, any>();
+
+                    querySnapshots.forEach(snapshot => {
+                        snapshot.docs.forEach(doc => {
+                            if (!productMap.has(doc.id)) {
+                                productMap.set(doc.id, { id: doc.id, ...doc.data() });
+                            }
+                        });
+                    });
+
+                    const allProducts = Array.from(productMap.values());
+                    
+                    // 3. Scoring (same as before)
+                    const ratingWeight = 0.6, distanceWeight = 0.4, maxDistanceKm = 100;
+                    
+                    allProducts.forEach((prod) => {
+                        let score = 0;
+                        const sellerRating = prod.sellerAverageRating || 0;
+                        if (hasBuyerLocation) {
+                            const sellerLoc = prod.sellerLocation;
+                            if (sellerLoc) {
+                                const distanceKm = getDistanceFromLatLonInKm(buyerLat!, buyerLon!, sellerLoc.latitude, sellerLoc.longitude);
+                                prod.distanceKm = distanceKm;
+                                const normalizedRating = sellerRating / 5.0;
+                                const normalizedDistance = (distanceKm !== null && distanceKm <= maxDistanceKm) ? 1.0 - (distanceKm / maxDistanceKm) : 0;
+                                score = (ratingWeight * normalizedRating) + (distanceWeight * normalizedDistance);
+                            }
+                        } else {
+                            score = ratingWeight * (sellerRating / 5.0);
+                        }
+                        prod.score = score;
+                    });
+                    
+                    // 4. Promotion Ranking (same as before)
+                    const featured: any[] = [];
+                    const bumped: any[] = [];
+                    const regular: any[] = [];
+
+                    allProducts.forEach((p) => {
+                        if (p.isFeatured) {
+                            featured.push(p);
+                        } else if (p.lastBumpedAt && p.lastBumpedAt.toMillis() > twentyFourHoursAgo.toMillis()) {
+                            bumped.push(p);
+                        } else {
+                            regular.push(p);
+                        }
+                    });
+
+                    featured.sort((a, b) => (b.score || 0) - (a.score || 0));
+                    bumped.sort((a, b) => b.lastBumpedAt.toMillis() - a.lastBumpedAt.toMillis()); 
+                    regular.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+                    const combined = [...featured, ...bumped, ...regular];
+                    const rankedProducts = combined.slice(0, 50).map((p) => ({ id: p.id, distanceKm: p.distanceKm }));
+                    
+                    return { rankedProducts };
+
+                } catch (error) {
+                    logger.error("Error getting ranked products:", error);
+                    throw new HttpsError("internal", "Failed to retrieve product ranking.");
+                }
+            }
+
+
             case "geocodeAddress": {
                 const { address } = data;
                 if (!address) throw new HttpsError("invalid-argument", "An address must be provided.");
@@ -146,17 +283,120 @@ export const api = onCall(
                     throw new HttpsError("internal", "An error occurred while trying to geocode the address.");
                 }
             }
+
+            case "incrementProductViewCount": {
+                const { productId } = data;
+                if (!productId) throw new HttpsError("invalid-argument", "A valid productId must be provided.");
+                const productRef = db.collection("products").doc(productId);
+                try {
+                    await productRef.update({ viewCount: FieldValue.increment(1) });
+                    return { success: true, message: "View count incremented." };
+                } catch (error) {
+                    logger.error(`Error incrementing view count for product ${productId}:`, error);
+                    return { success: false, message: "Could not update view count." };
+                }
+            }
+
+            case "getListingDetailsFromTitle": {
+                const { title } = data;
+                if (!title) throw new HttpsError("invalid-argument", "A valid product title is required.");
+                const apiKey = GEMINI_API_KEY.value();
+                if (!apiKey) throw new HttpsError("internal", "AI service is not configured correctly.");
+                try {
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model:"gemini-2.5-flash" });
+                    const prompt = `Based on the product title "${title}", generate a compelling product description (2-3 sentences) and suggest the most appropriate category. Respond with a valid JSON object only: {"description": "...", "category": "..."}. Valid Categories: ${PRODUCT_CATEGORIES_FOR_AI.join(", ")}`;
+                    const result = await model.generateContent(prompt);
+                    const responseText = result.response.text();
+                    let suggestions = JSON.parse(responseText.match(/{[\s\S]*}/)?.[0] || "{}");
+                    if (!PRODUCT_CATEGORIES_FOR_AI.includes(suggestions.category)) suggestions.category = "Other";
+                    return { suggestions };
+                } catch (error) {
+                    logger.error("Error in getListingDetailsFromTitle:", error);
+                    throw new HttpsError("internal", "Could not generate suggestions.");
+                }
+            }
+
+            case "visualSearch": {
+                const { imageUrl } = data;
+                if (!imageUrl) {
+                    throw new HttpsError("invalid-argument", "A valid 'imageUrl' is required.");
+                }
+                
+                const apiKey = GEMINI_API_KEY.value();
+                if (!apiKey) {
+                    throw new HttpsError("internal", "AI service is not configured correctly.");
+                }
+
+                try {
+                    const imageResponse = await axios.get(imageUrl, {
+                        responseType: "arraybuffer",
+                    });
+                    const base64Image = Buffer.from(imageResponse.data, "binary").toString("base64");
+                    const mimeType = imageResponse.headers["content-type"] || "image/jpeg";
+
+                    const imagePart = {
+                        inlineData: {
+                            data: base64Image,
+                            mimeType: mimeType,
+                        },
+                    };
+
+                    const prompt = `Analyze this image and identify the main product. Respond with a short search query for it and the most appropriate category. Respond with a valid JSON object only: {"searchQuery": "...", "category": "..."}. Valid Categories: ${PRODUCT_CATEGORIES_FOR_AI.join(", ")}`;
+
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); 
+                    
+                    const result = await model.generateContent([prompt, imagePart]);
+                    const responseText = result.response.text();
+                    
+                    let suggestions = JSON.parse(responseText.match(/{[\s\S]*}/)?.[0] || "{}");
+                    
+                    if (!PRODUCT_CATEGORIES_FOR_AI.includes(suggestions.category)) {
+                        suggestions.category = "Other";
+                    }
+                    return { suggestions };
+
+                } catch (error) {
+                    logger.error("Error in visualSearch:", error);
+                    throw new HttpsError("internal", "Could not process the image search.");
+                }
+            }
+
+            case "askGemini": {
+                const { prompt } = data;
+                if (!prompt) throw new HttpsError("invalid-argument", "A non-empty 'prompt' is required.");
+                const apiKey = GEMINI_API_KEY.value();
+                if (!apiKey) throw new HttpsError("internal", "API key not configured.");
+                try {
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model:"gemini-2.5-flash" });
+                    const result = await model.generateContent(prompt);
+                    return { reply: result.response.text() };
+                } catch (error) {
+                    logger.error("Error calling Gemini in askGemini:", error);
+                    throw new HttpsError("internal", "Failed to process request with AI model.");
+                }
+            }
             
             case "submitProduct": {
-                checkAuth();
-                const { name, description, price, category, condition, imageUris, videoUri, isAuction, auctionDurationDays, location, itemAddress } = data;
-                const sellerId = request.auth!.uid;
+                const { name, description, price, category, condition, imageUris, videoUri, isAuction, auctionDurationDays, location, itemAddress, sellerId } = data;
+                if (!sellerId) throw new HttpsError("unauthenticated", "A sellerId must be provided.");
                 if (!name || !price || !category || !condition || !imageUris || imageUris.length === 0 || !location) throw new HttpsError("invalid-argument", "Missing required product information.");
                 try {
                     const sellerDoc = await db.collection("users").doc(sellerId).get();
                     if (!sellerDoc.exists) throw new HttpsError("not-found", "Seller profile not found.");
                     const sellerData = sellerDoc.data();
-                    const productData: any = { name, description, category, condition, imageUrls: imageUris, videoUrl: videoUri || null, sellerId, sellerDisplayName: sellerData?.displayName || "Anonymous", sellerProfilePicUrl: sellerData?.profilePicUrl || null, sellerIsVerified: sellerData?.isVerified || false, sellerAverageRating: sellerData?.averageRating || 0.0, sellerLocation: location, itemAddress: itemAddress || null, isSold: false, isPaid: false, createdAt: FieldValue.serverTimestamp(), viewCount: 0 };
+                    const productData: any = { 
+                        name, description, category, condition, imageUrls: imageUris, videoUrl: videoUri || null, 
+                        sellerId, sellerDisplayName: sellerData?.displayName || "Anonymous", sellerProfilePicUrl: sellerData?.profilePicUrl || null, 
+                        sellerIsVerified: sellerData?.isVerified || false, sellerAverageRating: sellerData?.averageRating || 0.0, 
+                        sellerLocation: new admin.firestore.GeoPoint(location.latitude, location.longitude),
+                        geohash: geohash.encode(location.latitude, location.longitude),
+                        itemAddress: itemAddress || null, isSold: false, isPaid: false, 
+                        createdAt: FieldValue.serverTimestamp(), viewCount: 0,
+                        isFeatured: false, lastBumpedAt: null 
+                    };
                     if (isAuction) {
                         productData.auctionInfo = { startingPrice: price, currentBid: price, leadingBidderId: null, endTime: null };
                         productData.price = price;
@@ -173,16 +413,20 @@ export const api = onCall(
             }
 
             case "updateProduct": {
-                checkAuth();
-                const { productId, name, description, price, category, condition, imageUris, videoUri, itemAddress, location } = data;
-                const sellerId = request.auth!.uid;
+                const { productId, name, description, price, category, condition, imageUris, videoUri, itemAddress, location, sellerId } = data;
+                if (!sellerId) throw new HttpsError("unauthenticated", "A sellerId must be provided.");
                 if (!productId || !name || !price || !category || !condition || !imageUris || imageUris.length === 0 || !location) throw new HttpsError("invalid-argument", "Missing required product information for update.");
                 const productRef = db.collection("products").doc(productId);
                 try {
                     const productDoc = await productRef.get();
                     if (!productDoc.exists) throw new HttpsError("not-found", "Product not found.");
                     if (productDoc.data()?.sellerId !== sellerId) throw new HttpsError("permission-denied", "You are not authorized to edit this product.");
-                    const productUpdates = { name, description, price, category, condition, imageUrls: imageUris, videoUrl: videoUri || null, itemAddress: itemAddress || null, sellerLocation: location };
+                    const productUpdates: any = { 
+                        name, description, price, category, condition, imageUrls: imageUris, 
+                        videoUrl: videoUri || null, itemAddress: itemAddress || null, 
+                        sellerLocation: new admin.firestore.GeoPoint(location.latitude, location.longitude),
+                        geohash: geohash.encode(location.latitude, location.longitude),
+                    };
                     await productRef.update(productUpdates);
                     return { success: true, message: "Product updated successfully." };
                 } catch (error) {
@@ -191,24 +435,10 @@ export const api = onCall(
                 }
             }
 
-            case "incrementProductViewCount": {
-                const { productId } = data;
-                if (!productId) throw new HttpsError("invalid-argument", "A valid productId must be provided.");
-                const productRef = db.collection("products").doc(productId);
-                try {
-                    await productRef.update({ viewCount: FieldValue.increment(1) });
-                    return { success: true, message: "View count incremented." };
-                } catch (error) {
-                    logger.error(`Error incrementing view count for product ${productId}:`, error);
-                    return { success: false, message: "Could not update view count." };
-                }
-            }
-
             case "proposeProductSwap": {
-                checkAuth();
-                const { proposingProductId, targetProductId, cashTopUp } = data;
+                const { proposingProductId, targetProductId, cashTopUp, proposingUserId } = data;
+                if (!proposingUserId) throw new HttpsError("unauthenticated", "A proposingUserId must be provided.");
                 if (!proposingProductId || !targetProductId) throw new HttpsError("invalid-argument", "Both proposing and target product IDs are required.");
-                const proposingUserId = request.auth!.uid;
                 return db.runTransaction(async (transaction) => {
                     const proposingProductRef = db.collection("products").doc(proposingProductId);
                     const targetProductRef = db.collection("products").doc(targetProductId);
@@ -227,15 +457,18 @@ export const api = onCall(
                     const notificationPayload = { title: "New Swap Proposal! 🔄", body: notificationBody, type: "swap_proposal", data: { type: "swap_proposal", swapId: swapRef.id } };
                     await storeNotificationRecord(targetProductData?.sellerId, notificationPayload);
                     await sendPushNotifications(targetProductData?.sellerId, notificationPayload);
+                    
+                    const systemMessage = `A new swap has been proposed: "${proposingProductData?.name}" for "${targetProductData?.name}".`;
+                    await sendSystemChatMessage(proposingUserId, targetProductData?.sellerId, systemMessage);
+
                     return { success: true, swapId: swapRef.id };
                 });
             }
 
             case "respondToSwap": {
-                checkAuth();
-                const { swapId, response } = data;
+                const { swapId, response, currentUserId } = data;
+                if (!currentUserId) throw new HttpsError("unauthenticated", "A currentUserId must be provided.");
                 if (!swapId || !["accepted", "rejected"].includes(response)) throw new HttpsError("invalid-argument", "A valid swapId and response ('accepted' or 'rejected') are required.");
-                const currentUserId = request.auth!.uid;
                 const swapRef = db.collection("swaps").doc(swapId);
                 return db.runTransaction(async (transaction) => {
                     const swapDoc = await transaction.get(swapRef);
@@ -262,10 +495,9 @@ export const api = onCall(
             }
 
             case "placeBid": {
-                checkAuth();
-                const { productId, amount } = data;
+                const { productId, amount, bidderId } = data;
+                if (!bidderId) throw new HttpsError("unauthenticated", "A bidderId must be provided.");
                 if (!productId || typeof amount !== "number" || amount <= 0) throw new HttpsError("invalid-argument", "A valid product ID and bid amount are required.");
-                const bidderId = request.auth!.uid;
                 const productRef = db.collection("products").doc(productId);
                 return db.runTransaction(async (transaction) => {
                     const productDoc = await transaction.get(productRef);
@@ -293,37 +525,6 @@ export const api = onCall(
                 });
             }
             
-            case "getRankedProducts": {
-                const { latitude: buyerLat, longitude: buyerLon } = data;
-                const hasBuyerLocation = (typeof buyerLat === "number" && typeof buyerLon === "number");
-                const ratingWeight = 0.6, distanceWeight = 0.4, maxDistanceKm = 100, initialLimit = 200, finalLimit = 50;
-                const now = admin.firestore.Timestamp.now();
-                try {
-                    const productsSnapshot = await db.collection("products").where("isPaid", "==", true).where("isSold", "==", false).where("expiresAt", ">", now).orderBy("expiresAt", "asc").limit(initialLimit).get();
-                    const candidateProducts: any[] = productsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data(), score: 0, distanceKm: null }));
-                    if (hasBuyerLocation) {
-                        candidateProducts.forEach((prod) => {
-                            const sellerLoc = prod.sellerLocation;
-                            if (sellerLoc) {
-                                const distanceKm = getDistanceFromLatLonInKm(buyerLat!, buyerLon!, sellerLoc.latitude, sellerLoc.longitude);
-                                prod.distanceKm = distanceKm;
-                                const normalizedRating = (prod.sellerAverageRating || 0) / 5.0;
-                                const normalizedDistance = (distanceKm !== null && distanceKm <= maxDistanceKm) ? 1.0 - (distanceKm / maxDistanceKm) : 0;
-                                prod.score = (ratingWeight * normalizedRating) + (distanceWeight * normalizedDistance);
-                            }
-                        });
-                    } else {
-                        candidateProducts.forEach((p) => p.score = ratingWeight * ((p.sellerAverageRating || 0) / 5.0));
-                    }
-                    candidateProducts.sort((a, b) => (b.score || 0) - (a.score || 0));
-                    const rankedProducts = candidateProducts.slice(0, finalLimit).map((p) => ({ id: p.id, distanceKm: p.distanceKm }));
-                    return { rankedProducts };
-                } catch (error) {
-                    logger.error("Error getting ranked products:", error);
-                    throw new HttpsError("internal", "Failed to retrieve product ranking.");
-                }
-            }
-
             case "createPaymentIntent": {
                 try {
                     const stripe = new Stripe(STRIPE_SECRET_KEY.value());
@@ -335,8 +536,72 @@ export const api = onCall(
                 }
             }
 
+            case "createPromotionPaymentIntent": {
+                const { promotionType } = data;
+                if (promotionType !== "bump" && promotionType !== "feature") {
+                    throw new HttpsError("invalid-argument", "A valid promotionType ('bump' or 'feature') is required.");
+                }
+                
+                const type = promotionType as 'bump' | 'feature';
+                const amount = PROMOTION_PRICES[type];
+
+                try {
+                    const stripe = new Stripe(STRIPE_SECRET_KEY.value());
+                    const paymentIntent = await stripe.paymentIntents.create({
+                        amount: amount,
+                        currency: "usd",
+                        automatic_payment_methods: { enabled: true },
+                    });
+                    return { clientSecret: paymentIntent.client_secret };
+                } catch (error: any) {
+                    logger.error("Stripe error in createPromotionPaymentIntent:", error);
+                    throw new HttpsError("internal", error.message || "An internal error occurred.");
+                }
+            }
+
+            case "confirmPromotion": {
+                const { productId, promotionType, userId } = data;
+                if (!userId) throw new HttpsError("unauthenticated", "A userId must be provided.");
+                if (!productId || !promotionType) throw new HttpsError("invalid-argument", "productId and promotionType are required.");
+
+                const productRef = db.collection("products").doc(productId);
+
+                try {
+                    const productDoc = await productRef.get();
+                    if (!productDoc.exists) throw new HttpsError("not-found", "Product not found.");
+                    if (productDoc.data()?.sellerId !== userId) {
+                        throw new HttpsError("permission-denied", "You are not authorized to promote this listing.");
+                    }
+
+                    let updateData = {};
+                    let notificationBody = "";
+
+                    if (promotionType === "bump") {
+                        updateData = { lastBumpedAt: FieldValue.serverTimestamp() };
+                        notificationBody = `Your item "${productDoc.data()?.name}" has been bumped to the top of search results for 24 hours!`;
+                    } else if (promotionType === "feature") {
+                        updateData = { isFeatured: true };
+                         notificationBody = `Your item "${productDoc.data()?.name}" is now a featured listing!`;
+                    } else {
+                        throw new HttpsError("invalid-argument", "Invalid promotion type.");
+                    }
+
+                    await productRef.update(updateData);
+                    
+                    const payload = { title: "Listing Promoted! 🚀", body: notificationBody, type: "listing_promoted", data: { type: "listing_promoted", productId } };
+                    await storeNotificationRecord(userId, payload);
+                    await sendPushNotifications(userId, payload);
+                    
+                    return { success: true, message: "Promotion applied successfully!" };
+
+                } catch (error) {
+                    logger.error(`Error confirming promotion for product ${productId}:`, error);
+                    if (error instanceof HttpsError) throw error;
+                    throw new HttpsError("internal", "Could not apply promotion.");
+                }
+            }
+
             case "markProductAsPaid": {
-                checkAuth();
                 const { productId, isAuction, auctionDurationDays } = data;
                 if (!productId) throw new HttpsError("invalid-argument", "Product ID is required.");
                 try {
@@ -362,32 +627,50 @@ export const api = onCall(
             }
 
             case "markListingAsSold": {
-                checkAuth();
-                const { productId } = data;
-                if (!productId) throw new HttpsError("invalid-argument", "A valid productId must be provided.");
+                const { productId, userId } = data;
+                if (!userId) {
+                    throw new HttpsError("unauthenticated", "A userId must be provided.");
+                }
+                if (!productId) {
+                    throw new HttpsError("invalid-argument", "A valid productId must be provided.");
+                }
                 const productRef = db.collection("products").doc(productId);
                 try {
                     const productDoc = await productRef.get();
-                    if (!productDoc.exists) throw new HttpsError("not-found", "Product does not exist.");
-                    if (productDoc.data()?.sellerId !== request.auth!.uid) throw new HttpsError("permission-denied", "You are not authorized to modify this listing.");
+                    if (!productDoc.exists) {
+                        throw new HttpsError("not-found", "Product does not exist.");
+                    }
+            
+                    const productData = productDoc.data();
+                    if (productData?.sellerId !== userId) {
+                        throw new HttpsError("permission-denied", "You are not authorized to modify this listing.");
+                    }
+            
+                    if (productData?.auctionInfo) {
+                        throw new HttpsError("failed-precondition", "Auction items cannot be marked as sold manually. They must run to completion.");
+                    }
+            
                     await productRef.update({ isSold: true, soldAt: FieldValue.serverTimestamp() });
                     return { success: true, message: "Listing marked as sold." };
                 } catch (error) {
                     logger.error(`Error in markListingAsSold for product ${productId}:`, error);
+                    if (error instanceof HttpsError) {
+                        throw error;
+                    }
                     throw new HttpsError("internal", "An error occurred.");
                 }
             }
 
             case "relistProduct": {
-                checkAuth();
-                const { productId } = data;
+                const { productId, userId } = data;
+                if (!userId) throw new HttpsError("unauthenticated", "A userId must be provided.");
                 if (!productId) throw new HttpsError("invalid-argument", "A valid productId must be provided.");
                 const productRef = db.collection("products").doc(productId);
                 try {
                     const productDoc = await productRef.get();
                     const productData = productDoc.data();
                     if (!productDoc.exists || !productData) throw new HttpsError("not-found", "Product does not exist.");
-                    if (productData.sellerId !== request.auth!.uid) throw new HttpsError("permission-denied", "You are not authorized to modify this listing.");
+                    if (productData.sellerId !== userId) throw new HttpsError("permission-denied", "You are not authorized to modify this listing.");
                     if (new Date() >= productData.expiresAt.toDate()) throw new HttpsError("failed-precondition", "This listing has fully expired and cannot be relisted. Please create a new listing.");
                     await productRef.update({ isSold: false, soldAt: null });
                     const payload = { title: "Your Item is Relisted!", body: `Your item "${productData.name}" is now active again.`, type: "listing_relisted", data: { type: "listing_relisted", productId } };
@@ -400,49 +683,10 @@ export const api = onCall(
                     throw new HttpsError("internal", "An error occurred while relisting.");
                 }
             }
-
-            case "getListingDetailsFromTitle": {
-                checkAuth();
-                const { title } = data;
-                if (!title) throw new HttpsError("invalid-argument", "A valid product title is required.");
-                // ✅ FIXED: Use the new secret management system.
-                const apiKey = GEMINI_API_KEY.value();
-                if (!apiKey) throw new HttpsError("internal", "AI service is not configured correctly.");
-                try {
-                    const genAI = new GoogleGenerativeAI(apiKey);
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-                    const prompt = `Based on the product title "${title}", generate a compelling product description (2-3 sentences) and suggest the most appropriate category. Respond with a valid JSON object only: {"description": "...", "category": "..."}. Valid Categories: ${PRODUCT_CATEGORIES_FOR_AI.join(", ")}`;
-                    const result = await model.generateContent(prompt);
-                    const responseText = result.response.text();
-                    let suggestions = JSON.parse(responseText.match(/{[\s\S]*}/)?.[0] || "{}");
-                    if (!PRODUCT_CATEGORIES_FOR_AI.includes(suggestions.category)) suggestions.category = "Other";
-                    return { suggestions };
-                } catch (error) {
-                    logger.error("Error in getListingDetailsFromTitle:", error);
-                    throw new HttpsError("internal", "Could not generate suggestions.");
-                }
-            }
-
-            case "askGemini": {
-                const { prompt } = data;
-                if (!prompt) throw new HttpsError("invalid-argument", "A non-empty 'prompt' is required.");
-                // ✅ FIXED: Use the new secret management system.
-                const apiKey = GEMINI_API_KEY.value();
-                if (!apiKey) throw new HttpsError("internal", "API key not configured.");
-                try {
-                    const genAI = new GoogleGenerativeAI(apiKey);
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-                    const result = await model.generateContent(prompt);
-                    return { reply: result.response.text() };
-                } catch (error) {
-                    logger.error("Error calling Gemini in askGemini:", error);
-                    throw new HttpsError("internal", "Failed to process request with AI model.");
-                }
-            }
             
             case "clearAllNotifications": {
-                checkAuth();
-                const userId = request.auth!.uid;
+                const { userId } = data;
+                if (!userId) throw new HttpsError("unauthenticated", "A userId must be provided.");
                 const notificationsRef = db.collection("users").doc(userId).collection("notifications");
                 try {
                     const snapshot = await notificationsRef.get();
@@ -459,8 +703,8 @@ export const api = onCall(
             }
 
             case "requestVerification": {
-                checkAuth();
-                const userId = request.auth!.uid;
+                const { userId } = data;
+                if (!userId) throw new HttpsError("unauthenticated", "A userId must be provided.");
                 try {
                     await db.collection("users").doc(userId).update({ verificationRequested: true });
                     logger.log(`User ${userId} has requested verification.`);
@@ -472,8 +716,7 @@ export const api = onCall(
             }
             
             case "approveVerificationRequest": {
-                if (!request.auth || !request.auth.token.admin) throw new HttpsError("permission-denied", "This function can only be called by an administrator.");
-                const { userId } = data;
+                const { userId, adminId } = data;
                 if (!userId) throw new HttpsError("invalid-argument", "A valid userId must be provided.");
                 try {
                     const userRef = db.collection("users").doc(userId);
@@ -481,7 +724,7 @@ export const api = onCall(
                     const notificationPayload = { title: "You're Verified! ✅", body: "Congratulations! Your YahdSell account has been verified.", type: "account_verified", data: { type: "account_verified", url: `yahdsell2://profile/${userId}` } };
                     await storeNotificationRecord(userId, notificationPayload);
                     await sendPushNotifications(userId, notificationPayload);
-                    logger.log(`Admin ${request.auth.uid} has verified user ${userId}.`);
+                    logger.log(`Admin ${adminId || "UNKNOWN"} has verified user ${userId}.`);
                     return { success: true, message: `User ${userId} has been verified.` };
                 } catch (error) {
                     logger.error(`Error verifying user ${userId}:`, error);
@@ -490,9 +733,8 @@ export const api = onCall(
             }
 
             case "saveSearch": {
-                checkAuth();
-                const { query, category, minPrice, maxPrice, condition } = data;
-                const userId = request.auth!.uid;
+                const { query, category, minPrice, maxPrice, condition, userId } = data;
+                if (!userId) throw new HttpsError("unauthenticated", "A userId must be provided.");
                 if (!query && !category) throw new HttpsError("invalid-argument", "Either a search query or a category is required.");
                 try {
                     const searchRef = db.collection("users").doc(userId).collection("savedSearches").doc();
@@ -511,6 +753,44 @@ export const api = onCall(
 );
 
 // --- Trigger-based Functions ---
+
+export const sendNewChatMessageNotification = onDocumentCreated("privateChats/{chatId}/messages/{messageId}", async (event) => {
+    const messageData = event.data?.data();
+    if (!messageData || messageData.senderId === "system") {
+      logger.log("No message data or system message, skipping notification.");
+      return;
+    }
+  
+    const { senderId, text } = messageData;
+    const chatId = event.params.chatId;
+    
+    const participantIds = chatId.split("_");
+    const recipientId = participantIds.find((id) => id !== senderId);
+  
+    if (!recipientId) {
+      logger.error("Could not determine recipient from chatId:", chatId);
+      return;
+    }
+  
+    const senderDoc = await db.collection("users").doc(senderId).get();
+    const senderName = senderDoc.data()?.displayName || "Someone";
+  
+    const payload = {
+      title: `New message from ${senderName}`,
+      body: text || "Sent you a media message.",
+      type: "new_chat_message",
+      data: {
+        type: "new_chat_message",
+        senderId: senderId,
+        senderName: senderName,
+        chatId: chatId,
+      },
+    };
+  
+    await storeNotificationRecord(recipientId, payload);
+    await sendPushNotifications(recipientId, payload);
+});
+
 
 export const notifyOnSavedSearchMatch = onDocumentCreated("products/{productId}", async (event) => {
     const product = event.data?.data();
@@ -623,7 +903,10 @@ export const sendOfferStatusUpdateNotificationToBuyer = onDocumentUpdated("produ
     if (!buyerId || !sellerId || !["accepted", "rejected"].includes(status)) return;
     const productId = event.params.productId;
     const productRef = db.collection("products").doc(productId);
-    const productName = (await productRef.get()).data()?.name || "your offered item";
+    const productDoc = await productRef.get();
+    const productData = productDoc.data();
+    const productName = productData?.name || "your offered item";
+
     if (status === "accepted") {
         await productRef.update({ isSold: true, soldAt: FieldValue.serverTimestamp() });
         logger.log(`Product ${productId} marked as sold due to offer acceptance.`);
@@ -635,7 +918,15 @@ export const sendOfferStatusUpdateNotificationToBuyer = onDocumentUpdated("produ
         });
         await batch.commit();
         logger.log(`Rejected ${pendingOffersSnapshot.size - 1} other offers for product ${productId}.`);
+        
+        if (productData?.sellerLocation) {
+            const suggestions = await getSafeMeetupSuggestions(productData.sellerLocation.latitude, productData.sellerLocation.longitude);
+            if (suggestions) {
+                await sendSystemChatMessage(sellerId, buyerId, suggestions);
+            }
+        }
     }
+
     const payload = { title: status === "accepted" ? `Offer Accepted! 🎉` : `Offer Update for "${productName}"`, body: status === "accepted" ? `Your offer of $${offerAmount.toFixed(2)} has been accepted.` : `Your offer was declined.`, type: `offer_${status}`, data: { type: `offer_${status}`, productId: event.params.productId } };
     await storeNotificationRecord(buyerId, payload);
     await sendPushNotifications(buyerId, payload);
@@ -661,17 +952,41 @@ export const processEndedAuctions = onSchedule("every 15 minutes", async () => {
     const promises = snapshot.docs.map(async (doc) => {
         const product = doc.data();
         const auction = product.auctionInfo;
+        const productId = doc.id;
+
+        const bidsSnapshot = await db.collection("products").doc(productId).collection("bids").get();
+        const allBidders = new Set(bidsSnapshot.docs.map((bidDoc) => bidDoc.data().bidderId));
 
         if (auction && auction.leadingBidderId) {
             await doc.ref.update({ isSold: true, soldAt: FieldValue.serverTimestamp() });
+            const winnerId = auction.leadingBidderId;
+
             const winnerPayload = { title: "You won the auction! 🏆", body: `Congratulations! You won the auction for "${product.name}".`, type: "auction_win", data: { type: "auction_win", productId: doc.id } };
-            await storeNotificationRecord(auction.leadingBidderId, winnerPayload);
-            await sendPushNotifications(auction.leadingBidderId, winnerPayload);
+            await storeNotificationRecord(winnerId, winnerPayload);
+            await sendPushNotifications(winnerId, winnerPayload);
+
             const sellerPayload = { title: "Your auction has ended!", body: `Your auction for "${product.name}" has ended. The winning bid was $${auction.currentBid.toFixed(2)}.`, type: "auction_end", data: { type: "auction_end", productId: doc.id } };
             await storeNotificationRecord(product.sellerId, sellerPayload);
             await sendPushNotifications(product.sellerId, sellerPayload);
-            await sendSystemChatMessage(product.sellerId, auction.leadingBidderId, `The auction for "${product.name}" has ended. Please arrange payment and collection.`);
-            logger.log(`Processed auction win for product ${doc.id} by user ${auction.leadingBidderId}.`);
+
+            await sendSystemChatMessage(product.sellerId, winnerId, `The auction for "${product.name}" has ended. Please arrange payment and collection.`);
+            logger.log(`Processed auction win for product ${doc.id} by user ${winnerId}.`);
+
+            if (product.sellerLocation) {
+                const suggestions = await getSafeMeetupSuggestions(product.sellerLocation.latitude, product.sellerLocation.longitude);
+                if (suggestions) {
+                    await sendSystemChatMessage(product.sellerId, winnerId, suggestions);
+                }
+            }
+
+
+            allBidders.forEach(async (bidderId) => {
+                if (bidderId !== winnerId) {
+                    const loserPayload = { title: "Auction ended", body: `The auction for "${product.name}" has ended. Unfortunately, you were not the highest bidder.`, type: "auction_loss", data: { type: "auction_loss", productId: productId } };
+                    await storeNotificationRecord(bidderId, loserPayload);
+                    await sendPushNotifications(bidderId, loserPayload);
+                }
+            });
         } else {
             const sellerPayload = { title: "Your auction has ended", body: `Unfortunately, your auction for "${product.name}" ended without any bids.`, type: "auction_end_no_bids", data: { type: "auction_end_no_bids", productId: doc.id } };
             await storeNotificationRecord(product.sellerId, sellerPayload);
@@ -709,3 +1024,4 @@ export const cleanupSoldOrExpiredListings = onSchedule("every 24 hours", async (
         logger.error("Error during cleanup of old listings:", error);
     }
 });
+
