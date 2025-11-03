@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -22,21 +23,33 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.navigation.Screen
-import com.google.accompanist.swiperefresh.SwipeRefresh
-import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import com.gari.yahdsell2.viewmodel.WishlistViewModel
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WishlistScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: WishlistViewModel = hiltViewModel()
 ) {
     val wishlistItems by viewModel.wishlistItems.collectAsState()
     val isLoading by viewModel.isLoadingWishlist.collectAsState()
     val error by viewModel.wishlistError.collectAsState()
+    val pullToRefreshState = rememberPullToRefreshState()
+
+    if (pullToRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.fetchWishlist()
+        }
+    }
+    LaunchedEffect(isLoading) {
+        if(!isLoading) {
+            pullToRefreshState.endRefresh()
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.fetchWishlist()
@@ -53,10 +66,10 @@ fun WishlistScreen(
             )
         }
     ) { paddingValues ->
-        SwipeRefresh(
-            state = rememberSwipeRefreshState(isRefreshing = isLoading),
-            onRefresh = { viewModel.fetchWishlist() },
-            modifier = Modifier.padding(paddingValues)
+        Box(
+            modifier = Modifier
+                .padding(paddingValues)
+                .nestedScroll(pullToRefreshState.nestedScrollConnection)
         ) {
             when {
                 isLoading && wishlistItems.isEmpty() -> {
@@ -93,6 +106,10 @@ fun WishlistScreen(
                     }
                 }
             }
+            PullToRefreshContainer(
+                state = pullToRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
         }
     }
 }
@@ -115,7 +132,6 @@ fun WishlistItemCard(
         ) {
             Image(
                 painter = rememberAsyncImagePainter(
-                    // ✅ FIXED: Use 'imageUrls' instead of 'imageUrl'
                     model = product.imageUrls.firstOrNull() ?: "https://placehold.co/200x200?text=No+Image"
                 ),
                 contentDescription = product.name,
@@ -157,3 +173,4 @@ fun WishlistItemCard(
         }
     }
 }
+

@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MonetizationOn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,14 +16,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.UserProfile
+// ✅ ADDED: Import for the Screen sealed class
+import com.gari.yahdsell2.navigation.Screen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val verificationRequests by viewModel.verificationRequests.collectAsState()
     val isLoading by viewModel.isLoadingVerificationRequests.collectAsState()
@@ -36,7 +39,7 @@ fun AdminScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Admin - Verification") },
+                title = { Text("Admin Panel") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
@@ -45,28 +48,45 @@ fun AdminScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (isLoading) {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-            } else if (verificationRequests.isEmpty()) {
-                Text("No pending verification requests.", modifier = Modifier.align(Alignment.Center))
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(verificationRequests) { user ->
-                        VerificationRequestItem(
-                            user = user,
-                            isProcessing = processingId == user.uid,
-                            onApprove = {
-                                processingId = user.uid
-                                viewModel.approveVerification(user.uid) { success, message ->
-                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                                    processingId = null
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+
+            // Button to navigate to Manage Fees Screen
+            Button(
+                onClick = { navController.navigate(Screen.AdminFees.route) },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Icon(Icons.Default.MonetizationOn, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Manage Listing Fees")
+            }
+
+            Text("Pending Verification Requests", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(12.dp))
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                } else if (verificationRequests.isEmpty()) {
+                    Text("No pending verification requests.", modifier = Modifier.align(Alignment.Center))
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(verificationRequests) { user ->
+                            VerificationRequestItem(
+                                user = user,
+                                isProcessing = processingId == user.uid,
+                                onApprove = {
+                                    processingId = user.uid
+                                    viewModel.approveVerification(user.uid) { success, message ->
+                                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                        processingId = null
+                                        // Refresh the list if approval was successful
+                                        if (success) viewModel.fetchVerificationRequests()
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }
@@ -106,3 +126,4 @@ fun VerificationRequestItem(
         }
     }
 }
+

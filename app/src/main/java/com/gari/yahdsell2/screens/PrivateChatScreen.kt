@@ -41,9 +41,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.model.ChatMessage
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.ChatViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.firestore.GeoPoint
 import kotlinx.coroutines.launch
@@ -55,12 +56,13 @@ import java.util.*
 @Composable
 fun PrivateChatScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: ChatViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
     recipientId: String?,
     recipientName: String?
 ) {
     val messages by viewModel.messages.collectAsState()
-    val userState by viewModel.userState.collectAsState()
+    val userState by authViewModel.userState.collectAsState()
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val isUploading by viewModel.isUploadingMedia.collectAsState()

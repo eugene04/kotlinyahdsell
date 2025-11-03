@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ChatViewModel
 import com.gari.yahdsell2.model.PrivateChat
 import com.gari.yahdsell2.navigation.Screen
 import com.google.accompanist.swiperefresh.SwipeRefresh
@@ -32,7 +32,7 @@ import java.util.*
 @Composable
 fun ChatListScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: ChatViewModel = hiltViewModel(),
     bottomNavPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {

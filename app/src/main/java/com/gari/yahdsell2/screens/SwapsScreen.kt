@@ -26,7 +26,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.ProductSwap
 import java.text.NumberFormat
 import java.util.*
@@ -35,7 +35,7 @@ import java.util.*
 @Composable
 fun SwapsScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val swapsData by viewModel.swaps.collectAsState()
     val isLoading by viewModel.isLoadingSwaps.collectAsState()

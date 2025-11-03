@@ -15,14 +15,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.Offer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OffersScreen(
     navController: NavController,
-    viewModel: MainViewModel,
+    viewModel: ProfileViewModel,
     productId: String,
     productName: String
 ) {

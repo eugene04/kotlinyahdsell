@@ -19,11 +19,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.model.Review
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -31,13 +33,14 @@ import java.util.*
 @Composable
 fun SellerReviewScreen(
     navController: NavController,
-    viewModel: MainViewModel,
+    viewModel: ProfileViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
     sellerId: String,
     sellerName: String
 ) {
     val reviews by viewModel.sellerReviews.collectAsState()
     val isLoading by viewModel.isLoadingReviews.collectAsState()
-    val userState by viewModel.userState.collectAsState()
+    val userState by authViewModel.userState.collectAsState()
     val context = LocalContext.current
     var showReviewDialog by remember { mutableStateOf(false) }
 

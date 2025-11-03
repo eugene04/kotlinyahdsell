@@ -51,9 +51,9 @@ import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
 import com.gari.yahdsell2.BuildConfig
-import com.gari.yahdsell2.MainViewModel
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.SubmissionViewModel
 import com.google.android.gms.location.LocationServices
 import com.google.gson.Gson
 import kotlinx.coroutines.launch
@@ -67,7 +67,7 @@ private enum class VerifyAddressState { IDLE, VERIFYING, SUCCESS, ERROR }
 @Composable
 fun SubmissionFormScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: SubmissionViewModel = hiltViewModel(),
     productToRelistJson: String?,
     productIdToEdit: String?
 ) {

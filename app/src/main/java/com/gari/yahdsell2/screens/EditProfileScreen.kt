@@ -26,14 +26,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.UserProfile
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditProfileScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val profileUser by viewModel.profileUser.collectAsState()
     val context = LocalContext.current

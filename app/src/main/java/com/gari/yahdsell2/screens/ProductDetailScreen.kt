@@ -50,8 +50,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
+import com.gari.yahdsell2.viewmodel.ProductDetailViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 import com.gari.yahdsell2.model.Bid
 import com.gari.yahdsell2.model.Comment
 import com.gari.yahdsell2.model.Product
@@ -67,17 +69,19 @@ import java.util.concurrent.TimeUnit
 @Composable
 fun ProductDetailScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: ProductDetailViewModel = hiltViewModel(),
+    profileViewModel: ProfileViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
     productId: String?
 ) {
     val product by viewModel.selectedProduct.collectAsState()
     val sellerProfile by viewModel.sellerProfile.collectAsState()
-    val userState by viewModel.userState.collectAsState()
+    val userState by authViewModel.userState.collectAsState()
     val comments by viewModel.comments.collectAsState()
     val bids by viewModel.bids.collectAsState()
     val isProductInWishlist by viewModel.isProductInWishlist.collectAsState()
     val hasPendingOffer by viewModel.userHasPendingOffer.collectAsState()
-    val myProducts by viewModel.userProducts.collectAsState()
+    val myProducts by profileViewModel.userProducts.collectAsState()
 
     val context = LocalContext.current
     var showOfferDialog by remember { mutableStateOf(false) }
@@ -97,7 +101,7 @@ fun ProductDetailScreen(
     LaunchedEffect(userState) {
         if (userState is UserState.Authenticated) {
             val uid = (userState as UserState.Authenticated).user.uid
-            viewModel.fetchUserProfileAndProducts(uid)
+            profileViewModel.fetchUserProfileAndProducts(uid)
         }
     }
 
@@ -121,7 +125,7 @@ fun ProductDetailScreen(
             onDismiss = { showSwapDialog = false },
             onConfirm = { myProductId, cashTopUp ->
                 if (productId != null) {
-                    viewModel.proposeSwap(myProductId, productId, cashTopUp) { success, message ->
+                    profileViewModel.proposeSwap(myProductId, productId, cashTopUp) { success, message ->
                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -150,7 +154,6 @@ fun ProductDetailScreen(
         product?.let {
             PromotionDialog(
                 product = it,
-                viewModel = viewModel,
                 onDismiss = { showPromotionDialog = false }
             )
         }
@@ -413,11 +416,16 @@ private fun ProductPrimaryInfo(product: Product) {
     }
 }
 
+// Replace the getTimeRemaining function in ProductDetailScreen.kt with this:
+
+// Updat
+// ed AuctionInfoSection to handle unpaid auctions
 @Composable
 fun AuctionInfoSection(product: Product) {
     val auction = product.auctionInfo ?: return
 
     var timeRemaining by remember { mutableStateOf(getTimeRemaining(auction.endTime)) }
+    val isAuctionPaid = product.isPaid
 
     LaunchedEffect(auction.endTime) {
         while (true) {
@@ -447,13 +455,41 @@ fun AuctionInfoSection(product: Product) {
             Column(horizontalAlignment = Alignment.End) {
                 Text("AUCTION ENDS IN", style = MaterialTheme.typography.labelMedium)
                 Text(
-                    timeRemaining,
+                    text = when {
+                        !isAuctionPaid -> "Pending Payment"
+                        auction.endTime == null -> "Not Started"
+                        timeRemaining.isBlank() -> "Loading..."
+                        else -> timeRemaining
+                    },
                     style = MaterialTheme.typography.titleLarge,
-                    color = if (timeRemaining.contains("Ended")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    color = when {
+                        !isAuctionPaid -> MaterialTheme.colorScheme.tertiary
+                        timeRemaining.contains("Ended") -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
                     fontWeight = FontWeight.Bold
                 )
             }
         }
+
+        // Show payment notice if not paid
+        if (!isAuctionPaid) {
+            Spacer(Modifier.height(8.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Text(
+                    text = "⏳ Auction will start once the listing fee is paid",
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+            }
+        }
+
         Spacer(Modifier.height(16.dp))
 
         Row(
@@ -471,13 +507,13 @@ fun AuctionInfoSection(product: Product) {
             )
         }
 
-
         Spacer(Modifier.height(16.dp))
         Text("Description", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
         Text(product.description, style = MaterialTheme.typography.bodyLarge)
     }
 }
+
 
 
 @Composable
@@ -812,8 +848,18 @@ fun ProductActionBar(
                         Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                         Text("Chat")
                     }
-                    Button(onClick = onPlaceBid, modifier = Modifier.weight(1f), enabled = !product.isSold && isAuctionActive) {
-                        Text(if (!isAuctionActive) "Auction Ended" else "Place Bid")
+                    Button(
+                        onClick = onPlaceBid,
+                        modifier = Modifier.weight(1f),
+                        enabled = !product.isSold && isAuctionActive && product.isPaid
+                    ) {
+                        Text(
+                            when {
+                                !product.isPaid -> "Pending Payment"
+                                !isAuctionActive -> "Auction Ended"
+                                else -> "Place Bid"
+                            }
+                        )
                     }
                 }
             }
@@ -847,7 +893,6 @@ fun ProductActionBar(
         }
     }
 }
-
 @Composable
 fun MakeOfferDialog(
     productPrice: Double,
@@ -1011,12 +1056,18 @@ private fun formatPrice(price: Double): String {
     return numberFormat.format(price)
 }
 
+// Replace the getTimeRemaining function in ProductDetailScreen.kt with this:
+
 private fun getTimeRemaining(expiryDate: Date?): String {
-    if (expiryDate == null) return "Expired"
+    if (expiryDate == null) return "" // Return empty for null (unpaid auctions)
     val now = Date()
     if (now.after(expiryDate)) return "Auction Ended"
 
     val diff = expiryDate.time - now.time
+
+    // If diff is negative or zero, auction has ended
+    if (diff <= 0) return "Auction Ended"
+
     val days = TimeUnit.MILLISECONDS.toDays(diff)
     val hours = TimeUnit.MILLISECONDS.toHours(diff) % 24
     val minutes = TimeUnit.MILLISECONDS.toMinutes(diff) % 60
@@ -1030,4 +1081,3 @@ private fun getTimeRemaining(expiryDate: Date?): String {
         else -> "Ending soon"
     }
 }
-

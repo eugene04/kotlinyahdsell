@@ -13,7 +13,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.navigation.NavGraph.Companion.findStartDestination
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.PaymentViewModel
 import com.gari.yahdsell2.navigation.Screen
 import com.google.gson.Gson
 import com.stripe.android.paymentsheet.PaymentSheetResult
@@ -23,7 +23,7 @@ import com.stripe.android.paymentsheet.rememberPaymentSheet
 @Composable
 fun PaymentScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: PaymentViewModel = hiltViewModel(),
     productId: String?,
     productJson: String?
 ) {
@@ -38,6 +38,9 @@ fun PaymentScreen(
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isActivating by remember { mutableStateOf(false) }
+    // ✅ ADDED: State to track if the fee is zero
+    var isFreeListing by remember { mutableStateOf(false) }
+
 
     val isAuction = productData?.get("auctionInfo") != null
     val auctionDurationDays = (productData?.get("auctionDurationDays") as? Double)?.toInt() ?: 7
@@ -82,7 +85,12 @@ fun PaymentScreen(
             isAuction = isAuction,
             auctionDurationDays = auctionDurationDays,
             onSuccess = { secret ->
-                clientSecret = secret
+                // ✅ CHANGED: Handle null secret (free listing)
+                if (secret == null) {
+                    isFreeListing = true
+                } else {
+                    clientSecret = secret
+                }
                 isLoading = false
             },
             onError = { error ->
@@ -110,14 +118,49 @@ fun PaymentScreen(
             } else {
                 Text(productData?.get("name")?.toString() ?: "Your Product", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
-                Text("Listing Fee: $7.00", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                // ✅ CHANGED: Show correct price
+                Text(
+                    if (isFreeListing) "Listing Fee: FREE" else "Listing Fee: $7.00",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
                 val durationText = if (isAuction) "$auctionDurationDays days" else "7 days"
                 Text("Your item will be listed for $durationText.", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top=4.dp))
                 Spacer(Modifier.height(24.dp))
+
+                // ✅ CHANGED: Button logic
                 Button(
-                    onClick = { clientSecret?.let { paymentSheet.presentWithPaymentIntent(it) } },
-                    enabled = clientSecret != null
-                ) { Text("Pay and List Item") }
+                    onClick = {
+                        if (isFreeListing) {
+                            // Free flow: directly mark as paid
+                            if (productId != null) {
+                                isActivating = true
+                                viewModel.markProductAsPaid(productId, isAuction, auctionDurationDays) { success, message ->
+                                    isActivating = false
+                                    if (success) {
+                                        Toast.makeText(context, "Your free listing is now active!", Toast.LENGTH_LONG).show()
+                                        navController.navigate(Screen.Main.route) {
+                                            popUpTo(navController.graph.findStartDestination().id) { inclusive = true }
+                                            launchSingleTop = true
+                                        }
+                                    } else {
+                                        errorMessage = message
+                                    }
+                                }
+                            } else {
+                                errorMessage = "Product ID missing. Cannot activate listing."
+                            }
+                        } else {
+                            // Paid flow: launch payment sheet
+                            clientSecret?.let { paymentSheet.presentWithPaymentIntent(it) }
+                        }
+                    },
+                    // ✅ CHANGED: Button is enabled for free OR paid
+                    enabled = isFreeListing || (clientSecret != null)
+                ) {
+                    Text(if (isFreeListing) "Activate Free Listing" else "Pay and List Item")
+                }
             }
         }
     }

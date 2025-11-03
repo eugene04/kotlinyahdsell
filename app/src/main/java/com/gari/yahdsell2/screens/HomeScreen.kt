@@ -3,8 +3,11 @@ package com.gari.yahdsell2.screens
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
 import android.net.Uri
+import android.os.Bundle // Needed for Bundle
+import android.util.Log // Import Log for debugging
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,13 +33,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -44,26 +52,30 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle // Use collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
 import com.gari.yahdsell2.BuildConfig
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.navigation.Screen
-import com.google.accompanist.swiperefresh.SwipeRefresh
-import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.HomeViewModel
+import com.gari.yahdsell2.viewmodel.FacetCounts
+import com.gari.yahdsell2.viewmodel.ParsedSearch
+import com.gari.yahdsell2.viewmodel.UserState
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.auth.FirebaseUser
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay // Import for delay
+import kotlinx.coroutines.launch // Import for scope.launch
 import java.io.File
 import java.text.NumberFormat
-import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
 
@@ -72,60 +84,63 @@ import java.util.concurrent.TimeUnit
 @Composable
 fun HomeScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    homeViewModel: HomeViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
     toggleTheme: () -> Unit,
     bottomNavPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    val products by viewModel.products.collectAsState()
-    val userState by viewModel.userState.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsState()
-    val userLocation by viewModel.userLocation.collectAsState()
-    val visualSearchSuggestion by viewModel.visualSearchSuggestion.collectAsState()
-    val isProcessingVisualSearch by viewModel.isProcessingVisualSearch.collectAsState()
+    // --- Collect all states ---
+    val products by homeViewModel.products.collectAsStateWithLifecycle()
+    val userState by authViewModel.userState.collectAsStateWithLifecycle()
+    val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
+    val facetCounts by homeViewModel.facetCounts.collectAsStateWithLifecycle()
+    val visualSearchSuggestion by homeViewModel.visualSearchSuggestion.collectAsStateWithLifecycle()
+    val isProcessingVisualSearch by homeViewModel.isProcessingVisualSearch.collectAsStateWithLifecycle()
+    val conversationalSearchSuggestion by homeViewModel.conversationalSearchSuggestion.collectAsStateWithLifecycle()
+    val isParsingSearch by homeViewModel.isParsingSearch.collectAsStateWithLifecycle()
+    val authError by homeViewModel.authError.collectAsStateWithLifecycle()
+    val userLocation by homeViewModel.userLocation.collectAsStateWithLifecycle()
 
+    val pullToRefreshState = rememberPullToRefreshState()
 
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf("All") }
-    var selectedCondition by remember { mutableStateOf("Any Condition") }
-    var minPrice by remember { mutableStateOf("") }
-    var maxPrice by remember { mutableStateOf("") }
+    // --- Local UI states ---
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var selectedCategory by rememberSaveable { mutableStateOf("All") }
+    var selectedCondition by rememberSaveable { mutableStateOf("Any Condition") }
+    var minPrice by rememberSaveable { mutableStateOf("") }
+    var maxPrice by rememberSaveable { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
     var showImageSourceDialog by remember { mutableStateOf(false) }
+    var tempCameraImageUri by remember { mutableStateOf<Uri?>(null) }
+    var initialLoadDone by rememberSaveable { mutableStateOf(false) } // Flag to prevent search-as-you-type on init
+
+    // --- FIX: Define sheetState and scope here ---
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+    // ------------------------------------------
 
     val context = LocalContext.current
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-    var tempCameraImageUri by remember { mutableStateOf<Uri?>(null) }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
 
-    // --- LAUNCHERS ---
-
-    // Launcher for picking an image from the gallery
-    val galleryLauncher = rememberLauncherForActivityResult(
+    // --- Activity Result Launchers ---
+    val visualSearchLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
-        onResult = { uri: Uri? ->
-            uri?.let { viewModel.performVisualSearch(it) }
-        }
+        onResult = { uri: Uri? -> uri?.let { homeViewModel.performVisualSearch(it) } }
     )
 
-    // Launcher for taking a picture with the camera
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture(),
-        onResult = { success: Boolean ->
-            if (success) {
-                tempCameraImageUri?.let { viewModel.performVisualSearch(it) }
-            }
-        }
+        onResult = { success -> if (success) { tempCameraImageUri?.let { homeViewModel.performVisualSearch(it) } } }
     )
 
-    // Launcher for requesting camera permission
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            // Permission granted, now launch the camera
             val newUri = createImageUri(context)
             tempCameraImageUri = newUri
             cameraLauncher.launch(newUri)
@@ -134,67 +149,163 @@ fun HomeScreen(
         }
     }
 
-
-    // Effect to listen for results from the ViewModel
-    LaunchedEffect(visualSearchSuggestion) {
-        visualSearchSuggestion?.let { (query, category) ->
-            searchQuery = query
-            selectedCategory = category
-            Toast.makeText(context, "Search updated based on your image!", Toast.LENGTH_SHORT).show()
-            viewModel.clearVisualSearchSuggestion()
-        }
-    }
-
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
             fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-                viewModel.updateUserLocation(location)
-                viewModel.fetchProducts(location?.latitude, location?.longitude)
+                homeViewModel.updateUserLocation(location)
+                Log.d("HomeScreen", "Location granted, fetching initially. Loc: $location")
+                homeViewModel.fetchProducts(location?.latitude, location?.longitude)
             }
         } else {
-            viewModel.updateUserLocation(null)
-            viewModel.fetchProducts(null, null)
+            homeViewModel.updateUserLocation(null)
+            Log.d("HomeScreen", "Location denied, fetching without location.")
+            homeViewModel.fetchProducts(null, null) // Fetch without location if denied
+            Toast.makeText(context, "Location permission denied. Showing results for all areas.", Toast.LENGTH_LONG).show()
+        }
+        initialLoadDone = true // Mark initial load as done *after* the fetch is triggered
+    }
+
+    // --- LaunchedEffects for side-effects ---
+
+    // Handle navigation result from SavedSearchesScreen
+    val savedStateHandle = navController.currentBackStackEntry?.savedStateHandle
+    val savedSearchResult = savedStateHandle?.getLiveData<Bundle>(SavedSearchResultKeys.CRITERIA_KEY)
+
+    LaunchedEffect(savedSearchResult) {
+        savedSearchResult?.observeForever { criteriaBundle ->
+            if (savedStateHandle.contains(SavedSearchResultKeys.CRITERIA_KEY)) {
+                searchQuery = criteriaBundle.getString("query") ?: ""
+                selectedCategory = criteriaBundle.getString("category") ?: "All"
+                minPrice = criteriaBundle.getDouble("minPrice", -1.0).takeIf { it >= 0 }?.toString() ?: ""
+                maxPrice = criteriaBundle.getDouble("maxPrice", -1.0).takeIf { it >= 0 }?.toString() ?: ""
+                selectedCondition = criteriaBundle.getString("condition") ?: "Any Condition"
+
+                savedStateHandle.remove<Bundle>(SavedSearchResultKeys.CRITERIA_KEY)
+                // Fetch is triggered by the "search-as-you-type" effect below
+            }
         }
     }
 
+    // Handle initial app load: Check permission, get location, and fetch products ONCE
     LaunchedEffect(userState) {
-        if (userState !is UserState.Loading) {
-            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (initialLoadDone || savedStateHandle?.contains(SavedSearchResultKeys.CRITERIA_KEY) == true) {
+            // Don't run initial load if it's already done or if we're handling a saved search result
+            return@LaunchedEffect
         }
-    }
 
-    // --- DIALOGS & BOTTOM SHEETS ---
-
-    val sheetState = rememberModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-
-    if (showFilterSheet) {
-        FilterBottomSheet(
-            sheetState = sheetState,
-            initialCondition = selectedCondition,
-            initialMinPrice = minPrice,
-            initialMaxPrice = maxPrice,
-            onDismiss = { showFilterSheet = false },
-            onApply = { newCondition, newMin, newMax ->
-                selectedCondition = newCondition
-                minPrice = newMin
-                maxPrice = newMax
-                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                    if (!sheetState.isVisible) {
-                        showFilterSheet = false
+        if (userState is UserState.Authenticated) {
+            Log.d("HomeScreen", "Initial load: User authenticated.")
+            // Check if permission is already granted
+            when (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                PackageManager.PERMISSION_GRANTED -> {
+                    Log.d("HomeScreen", "Location permission already granted, fetching location.")
+                    fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+                        homeViewModel.updateUserLocation(location)
+                        homeViewModel.fetchProducts(location?.latitude, location?.longitude)
+                        initialLoadDone = true // Mark load done
                     }
                 }
-            },
-            onClear = {
-                selectedCondition = "Any Condition"
-                minPrice = ""
-                maxPrice = ""
+                else -> {
+                    Log.d("HomeScreen", "Location permission not granted, requesting.")
+                    locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                    // The launcher callback will set initialLoadDone = true
+                }
             }
+        } else if (userState is UserState.Unauthenticated) {
+            Log.d("HomeScreen", "Initial load: User unauthenticated, fetching without location.")
+            homeViewModel.fetchProducts(null, null) // Fetch without location
+            initialLoadDone = true // Mark load done
+        }
+    }
+
+    // Handle Visual Search results
+    LaunchedEffect(visualSearchSuggestion) {
+        visualSearchSuggestion?.let { (query, category) ->
+            searchQuery = query
+            selectedCategory = category
+            selectedCondition = "Any Condition" // Reset other filters
+            minPrice = ""
+            maxPrice = ""
+            Toast.makeText(context, "Filters updated based on image!", Toast.LENGTH_SHORT).show()
+            homeViewModel.clearVisualSearchSuggestion()
+            // Fetch is triggered by the "search-as-you-type" effect below
+        }
+    }
+
+    // Handle AI Conversational Search results
+    LaunchedEffect(conversationalSearchSuggestion) {
+        conversationalSearchSuggestion?.let { parsedSearch ->
+            Log.d("HomeScreen", "Applying conversational search: $parsedSearch")
+            // Update all UI states based on AI response
+            searchQuery = parsedSearch.searchQuery
+            selectedCategory = parsedSearch.filters.category ?: "All"
+            selectedCondition = parsedSearch.filters.condition ?: "Any Condition"
+            minPrice = parsedSearch.filters.minPrice?.toString() ?: ""
+            maxPrice = parsedSearch.filters.maxPrice?.toString() ?: ""
+
+            homeViewModel.clearConversationalSearchSuggestion()
+            // The search itself will be triggered by the "search-as-you-type" effect below
+        }
+    }
+
+    // The "Search-As-You-Type" / Debounced Search Effect
+    // This now runs whenever ANY filter state changes
+    LaunchedEffect(searchQuery, selectedCategory, selectedCondition, minPrice, maxPrice) {
+        if (!initialLoadDone) {
+            // Don't run this effect until the initial load is complete
+            return@LaunchedEffect
+        }
+        delay(300) // Debounce: wait 300ms after user stops changing filters
+        Log.d("HomeScreen", "Debounced Search Triggered - Query: $searchQuery, Category: $selectedCategory")
+        homeViewModel.fetchProducts(
+            latitude = userLocation?.latitude,
+            longitude = userLocation?.longitude,
+            query = searchQuery,
+            filters = mapOf(
+                "category" to selectedCategory.takeIf { it != "All" },
+                "condition" to selectedCondition.takeIf { it != "Any Condition" },
+                "minPrice" to minPrice.toDoubleOrNull(),
+                "maxPrice" to maxPrice.toDoubleOrNull()
+            ).filterValues { it != null }
         )
     }
 
+    // Handle Pull-to-Refresh
+    if (pullToRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            Log.d("HomeScreen", "Pull Refresh - Query: $searchQuery, Category: $selectedCategory")
+            homeViewModel.fetchProducts(
+                latitude = userLocation?.latitude,
+                longitude = userLocation?.longitude,
+                query = searchQuery,
+                filters = mapOf(
+                    "category" to selectedCategory.takeIf { it != "All" },
+                    "condition" to selectedCondition.takeIf { it != "Any Condition" },
+                    "minPrice" to minPrice.toDoubleOrNull(),
+                    "maxPrice" to maxPrice.toDoubleOrNull()
+                ).filterValues { it != null }
+            )
+        }
+    }
+
+    // Stop the pull-to-refresh spinner when refreshing is false
+    LaunchedEffect(isRefreshing) {
+        if (!isRefreshing) {
+            pullToRefreshState.endRefresh()
+        }
+    }
+
+    // Show auth errors as Toasts
+    LaunchedEffect(authError) {
+        authError?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            homeViewModel.clearAuthError() // Clear the error after showing it
+        }
+    }
+
+    // --- Dialogs ---
     if (showImageSourceDialog) {
         ImageSourceSelectionDialog(
             onDismiss = { showImageSourceDialog = false },
@@ -204,32 +315,47 @@ fun HomeScreen(
             },
             onChooseFromGallery = {
                 showImageSourceDialog = false
-                galleryLauncher.launch("image/*")
+                visualSearchLauncher.launch("image/*")
             }
         )
     }
 
+    if (showFilterSheet) {
+        FilterBottomSheet(
+            sheetState = sheetState, // Pass the state
+            initialCondition = selectedCondition,
+            initialMinPrice = minPrice,
+            initialMaxPrice = maxPrice,
+            conditionCounts = facetCounts["condition"] ?: emptyMap(), // Pass condition counts
+            onDismiss = { showFilterSheet = false },
+            onApply = { newCondition, newMin, newMax ->
+                selectedCondition = newCondition
+                minPrice = newMin
+                maxPrice = newMax
+                scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) showFilterSheet = false }
+                // Fetch is triggered by the "search-as-you-type" effect
+            },
+            onClear = {
+                selectedCondition = "Any Condition"
+                minPrice = ""
+                maxPrice = ""
+                // --- FIX: Hide sheet on clear ---
+                scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) showFilterSheet = false }
+                // Fetch is triggered by the "search-as-you-type" effect
+            }
+        )
+    }
 
-    // --- UI ---
-
+    // --- Main UI Scaffold ---
     Scaffold(
         modifier = modifier,
         topBar = {
             TopAppBar(
                 title = { Text("YahdSell", color = MaterialTheme.colorScheme.onPrimary) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
                 actions = {
                     IconButton(onClick = { navController.navigate(Screen.Notifications.route) }) {
-                        BadgedBox(
-                            badge = {
-                                val count = unreadNotificationCount
-                                if (count > 0) {
-                                    Badge { Text(if (count > 9) "9+" else "$count") }
-                                }
-                            }
-                        ) {
+                        BadgedBox(badge = { /* Badge logic */ }) {
                             Icon(Icons.Default.Notifications, "Notifications", tint = MaterialTheme.colorScheme.onPrimary)
                         }
                     }
@@ -239,11 +365,7 @@ fun HomeScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(50))
                             .clickable {
-                                if (authUser != null) navController.navigate(
-                                    Screen.UserProfile.createRoute(
-                                        authUser.uid
-                                    )
-                                )
+                                if (authUser != null) navController.navigate(Screen.UserProfile.createRoute(authUser.uid))
                                 else navController.navigate(Screen.Login.route)
                             }
                             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -256,7 +378,7 @@ fun HomeScreen(
 
                     if (userState is UserState.Authenticated) {
                         IconButton(onClick = {
-                            viewModel.signOut()
+                            authViewModel.signOut()
                             navController.navigate(Screen.Login.route) { popUpTo(navController.graph.startDestinationId) { inclusive = true } }
                         }) {
                             Icon(Icons.AutoMirrored.Filled.Logout, "Logout", tint = MaterialTheme.colorScheme.onPrimary)
@@ -269,10 +391,7 @@ fun HomeScreen(
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             DropdownMenuItem(
                                 text = { Text("Toggle Dark Mode") },
-                                onClick = {
-                                    toggleTheme()
-                                    showMenu = false
-                                },
+                                onClick = { toggleTheme(); showMenu = false },
                                 leadingIcon = { Icon(Icons.Default.Brightness4, "Toggle Dark Mode") }
                             )
                         }
@@ -281,143 +400,98 @@ fun HomeScreen(
             )
         }
     ) { localScaffoldPadding ->
-        val filteredProducts = remember(products, searchQuery, selectedCategory, selectedCondition, minPrice, maxPrice) {
-            products.filter { product ->
-                val appliedMinPrice = minPrice.toDoubleOrNull()
-                val appliedMaxPrice = maxPrice.toDoubleOrNull()
-                val matchesSearch = product.name.contains(searchQuery, ignoreCase = true) || product.description.contains(searchQuery, ignoreCase = true)
-                val matchesCategory = selectedCategory == "All" || product.category == selectedCategory
-                val matchesCondition = selectedCondition == "Any Condition" || product.condition == selectedCondition
-                val matchesMinPrice = appliedMinPrice == null || product.price >= appliedMinPrice
-                val matchesMaxPrice = appliedMaxPrice == null || product.price <= appliedMaxPrice
-                matchesSearch && matchesCategory && matchesCondition && matchesMinPrice && matchesMaxPrice
-            }
-        }
-
+        // Main content column
         Column(modifier = Modifier
             .padding(bottom = bottomNavPadding.calculateBottomPadding())
             .padding(top = localScaffoldPadding.calculateTopPadding())
             .fillMaxSize()
         ) {
             val isFilterActive = searchQuery.isNotBlank() || selectedCategory != "All" || minPrice.isNotBlank() || maxPrice.isNotBlank() || selectedCondition != "Any Condition"
+
             SearchBarWithFilter(
                 searchQuery = searchQuery,
                 onSearchQueryChange = { searchQuery = it },
                 onFilterClick = { showFilterSheet = true },
                 isFilterActive = isFilterActive,
+                onSearchSubmit = { // Keyboard search button now triggers AI search
+                    keyboardController?.hide()
+                    homeViewModel.performConversationalSearch(searchQuery)
+                },
                 onSaveSearch = {
-                    viewModel.saveSearch(
-                        query = searchQuery,
-                        category = selectedCategory,
-                        minPrice = minPrice,
-                        maxPrice = maxPrice,
-                        condition = selectedCondition,
-                    ) { success, message ->
+                    homeViewModel.saveSearch(searchQuery, selectedCategory, minPrice, maxPrice, selectedCondition) { success, message ->
                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                     }
                 },
                 onVisualSearchClick = {
-                    if ((userState as? UserState.Authenticated)?.user != null) {
-                        showImageSourceDialog = true
-                    } else {
-                        Toast.makeText(context, "You must be logged in to use Visual Search.", Toast.LENGTH_SHORT).show()
+                    if (userState is UserState.Authenticated) showImageSourceDialog = true
+                    else {
+                        Toast.makeText(context, "Please log in to use Visual Search", Toast.LENGTH_SHORT).show()
                         navController.navigate(Screen.Login.route)
                     }
                 },
                 isVisualSearchLoading = isProcessingVisualSearch,
+                isConversationalSearchLoading = isParsingSearch, // Pass parsing state
                 onClearSearch = {
                     searchQuery = ""
                     selectedCategory = "All"
+                    selectedCondition = "Any Condition"
                     minPrice = ""
                     maxPrice = ""
-                    selectedCondition = "Any Condition"
+                    // Fetch is triggered by the "search-as-you-type" effect
                 }
             )
 
             CategoryBrowser(
                 selectedCategory = selectedCategory,
-                onCategoryClick = { selectedCategory = it }
+                categoryCounts = facetCounts["category"] ?: emptyMap(), // Pass category counts
+                onCategoryClick = { newCategory ->
+                    selectedCategory = newCategory
+                    // Fetch is triggered by the "search-as-you-type" effect
+                }
             )
 
-            SwipeRefresh(
-                state = rememberSwipeRefreshState(isRefreshing),
-                onRefresh = {
-                    userLocation?.let {
-                        viewModel.fetchProducts(it.latitude, it.longitude)
-                    } ?: viewModel.fetchProducts(null, null)
-                },
-                modifier = Modifier.weight(1f)
+            // Product Grid Area with Pull to Refresh
+            Box(modifier = Modifier
+                .weight(1f)
+                .nestedScroll(pullToRefreshState.nestedScrollConnection)
             ) {
-                if (filteredProducts.isEmpty() && !isRefreshing) {
-                    Box(Modifier
-                        .fillMaxSize()
-                        .padding(16.dp), contentAlignment = Alignment.Center) {
-                        Text("No products found. Try adjusting your filters.")
+                when {
+                    // Show loading only if pull-to-refresh isn't active AND list is empty
+                    isRefreshing && !pullToRefreshState.isRefreshing && products.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     }
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 160.dp),
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        items(filteredProducts, key = { it.id }) { product ->
-                            ProductCard(product = product) {
-                                navController.navigate(Screen.ProductDetail.createRoute(product.id))
+                    products.isEmpty() && !isRefreshing -> { // Empty state after filtering/loading
+                        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                            Text("No products found. Try adjusting your search or filters.", textAlign = TextAlign.Center)
+                        }
+                    }
+                    else -> { // Display product grid
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 160.dp),
+                            contentPadding = PaddingValues(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(products, key = { it.id }) { product ->
+                                ProductCard(product = product) {
+                                    navController.navigate(Screen.ProductDetail.createRoute(product.id))
+                                }
                             }
                         }
                     }
                 }
+                // Pull to refresh indicator
+                PullToRefreshContainer(
+                    state = pullToRefreshState,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
             }
         }
     }
 }
 
-// --- HELPER COMPOSABLES & FUNCTIONS ---
-
-private fun createImageUri(context: Context): Uri {
-    val imageFile = File(context.cacheDir, "camera_image_${System.currentTimeMillis()}.jpg")
-    return FileProvider.getUriForFile(
-        context,
-        "${BuildConfig.APPLICATION_ID}.provider",
-        imageFile
-    )
-}
-
-@Composable
-fun ImageSourceSelectionDialog(
-    onDismiss: () -> Unit,
-    onTakePhoto: () -> Unit,
-    onChooseFromGallery: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Visual Search") },
-        text = { Text("How would you like to find an item?") },
-        confirmButton = {
-            Column(Modifier.fillMaxWidth()) {
-                Button(onClick = onTakePhoto, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = "Take Photo")
-                    Spacer(Modifier.width(8.dp))
-                    Text("Take Photo")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onChooseFromGallery, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Image, contentDescription = "Choose from Gallery")
-                    Spacer(Modifier.width(8.dp))
-                    Text("Choose from Gallery")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
+// --- Composables used in HomeScreen ---
 
 @Composable
 fun SearchBarWithFilter(
@@ -425,9 +499,11 @@ fun SearchBarWithFilter(
     onSearchQueryChange: (String) -> Unit,
     onFilterClick: () -> Unit,
     isFilterActive: Boolean,
+    onSearchSubmit: () -> Unit,
     onSaveSearch: () -> Unit,
     onVisualSearchClick: () -> Unit,
     isVisualSearchLoading: Boolean,
+    isConversationalSearchLoading: Boolean, // Added
     onClearSearch: () -> Unit
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -441,42 +517,67 @@ fun SearchBarWithFilter(
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchQueryChange,
-            label = { Text("Search products...") },
+            label = { Text("Search or ask AI...") },
             leadingIcon = {
-                IconButton(onClick = onVisualSearchClick, enabled = !isVisualSearchLoading) {
-                    if (isVisualSearchLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    } else {
-                        Icon(Icons.Default.PhotoCamera, contentDescription = "Visual Search")
-                    }
+                IconButton(onClick = onVisualSearchClick, enabled = !isVisualSearchLoading && !isConversationalSearchLoading) {
+                    if (isVisualSearchLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    else Icon(Icons.Default.PhotoCamera, contentDescription = "Visual Search")
                 }
             },
             trailingIcon = {
-                if (searchQuery.isNotBlank()) {
-                    IconButton(onClick = onClearSearch) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear search")
-                    }
-                } else {
-                    IconButton(onClick = { keyboardController?.hide() }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
-                    }
+                when {
+                    isConversationalSearchLoading -> CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    searchQuery.isNotEmpty() -> IconButton(onClick = onClearSearch) { Icon(Icons.Default.Clear, contentDescription = "Clear Search") }
+                    else -> Icon(Icons.Default.Search, contentDescription = "Search")
                 }
             },
             modifier = Modifier.weight(1f),
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+            keyboardActions = KeyboardActions(onSearch = {
+                keyboardController?.hide()
+                onSearchSubmit() // Call the conversational search
+            }),
             shape = RoundedCornerShape(50)
         )
+        // Show Save Search only if filters or query are active
         if (isFilterActive) {
-            IconButton(onClick = onSaveSearch) {
+            IconButton(onClick = onSaveSearch, enabled = !isConversationalSearchLoading) {
                 Icon(Icons.Default.BookmarkBorder, contentDescription = "Save Search")
             }
         }
-        IconButton(onClick = onFilterClick) {
+        IconButton(onClick = onFilterClick, enabled = !isConversationalSearchLoading) {
             Icon(Icons.Default.Tune, contentDescription = "Advanced Filters")
         }
     }
+}
+
+@Composable
+fun ImageSourceSelectionDialog(onDismiss: () -> Unit, onTakePhoto: () -> Unit, onChooseFromGallery: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Visual Search") },
+        text = {
+            Column {
+                Text("Search for items using a photo.")
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onTakePhoto, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = "Take Photo"); Spacer(Modifier.width(8.dp)); Text("Take Photo")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onChooseFromGallery, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Image, contentDescription = "Choose from Gallery"); Spacer(Modifier.width(8.dp)); Text("Choose from Gallery")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+private fun createImageUri(context: Context): Uri {
+    val authority = "${context.packageName}.provider"
+    val imageFile = File(context.cacheDir, "visual_search_${System.currentTimeMillis()}.jpg")
+    return FileProvider.getUriForFile(context, authority, imageFile)
 }
 
 
@@ -485,8 +586,10 @@ data class CategoryItem(val name: String, val icon: ImageVector)
 @Composable
 fun CategoryBrowser(
     selectedCategory: String,
+    categoryCounts: Map<String, Int>, // Added
     onCategoryClick: (String) -> Unit
 ) {
+    // --- UPDATED: Full category list ---
     val categories = listOf(
         CategoryItem("All", Icons.Default.Category),
         CategoryItem("Electronics", Icons.Default.PhoneAndroid),
@@ -494,8 +597,15 @@ fun CategoryBrowser(
         CategoryItem("Home & Garden", Icons.Default.Yard),
         CategoryItem("Furniture", Icons.Default.Chair),
         CategoryItem("Vehicles", Icons.Default.DirectionsCar),
+        CategoryItem("Books, Movies & Music", Icons.Default.MenuBook),
+        CategoryItem("Collectibles & Art", Icons.Default.Palette),
+        CategoryItem("Sports & Outdoors", Icons.Default.SportsBasketball),
+        CategoryItem("Toys & Hobbies", Icons.Default.Toys),
+        CategoryItem("Baby & Kids", Icons.Default.ChildFriendly),
+        CategoryItem("Health & Beauty", Icons.Default.Spa),
         CategoryItem("Other", Icons.Default.MoreHoriz)
     )
+    // ---------------------------------
 
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
@@ -504,14 +614,21 @@ fun CategoryBrowser(
     ) {
         items(categories) { category ->
             val isSelected = category.name == selectedCategory
+            val count = categoryCounts[category.name] ?: 0
+            val isEnabled = count > 0 || category.name == "All"
+            val categoryText = if (isEnabled && category.name != "All") "${category.name} ($count)" else category.name
+            val alpha by animateFloatAsState(targetValue = if (isEnabled) 1f else 0.5f, label = "alpha")
+
             var buttonState by remember { mutableStateOf(ButtonState.Idle) }
             val scale by animateFloatAsState(if (buttonState == ButtonState.Pressed) 0.95f else 1f, label = "scale")
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
+                    .graphicsLayer(alpha = alpha) // Apply dimming
                     .scale(scale)
-                    .pointerInput(Unit) {
+                    .pointerInput(isEnabled) { // Re-trigger pointerInput if isEnabled changes
+                        if (!isEnabled) return@pointerInput // Don't register gestures if disabled
                         awaitPointerEventScope {
                             while (true) {
                                 awaitFirstDown(requireUnconsumed = false)
@@ -522,9 +639,10 @@ fun CategoryBrowser(
                         }
                     }
                     .clickable(
+                        enabled = isEnabled, // Control clickability
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = { onCategoryClick(category.name) }
+                        onClick = { if (isEnabled) onCategoryClick(category.name) }
                     )
             ) {
                 Surface(
@@ -541,10 +659,13 @@ fun CategoryBrowser(
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = category.name,
+                    text = categoryText, // Use text with count
                     fontSize = 12.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -553,50 +674,34 @@ fun CategoryBrowser(
 
 private enum class ButtonState { Pressed, Idle }
 
-
 @Composable
 fun ProfileAvatar(user: FirebaseUser?) {
-    if (user?.photoUrl != null) {
-        Image(
-            painter = rememberAsyncImagePainter(model = user.photoUrl),
-            contentDescription = "Profile Picture",
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape),
-            contentScale = ContentScale.Crop
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.secondaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = user?.displayName?.firstOrNull()?.toString()?.uppercase() ?: "Y",
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
+    val painter = rememberAsyncImagePainter(
+        model = user?.photoUrl ?: "httpsG://placehold.co/100x100?text=${user?.displayName?.firstOrNull()?.uppercase() ?: '?'}"
+    )
+    Image(
+        painter = painter,
+        contentDescription = "Profile Picture",
+        modifier = Modifier.size(32.dp).clip(CircleShape),
+        contentScale = ContentScale.Crop
+    )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FilterBottomSheet(
     sheetState: SheetState,
     initialCondition: String,
     initialMinPrice: String,
     initialMaxPrice: String,
+    conditionCounts: Map<String, Int>, // Added
     onDismiss: () -> Unit,
     onApply: (condition: String, minPrice: String, maxPrice: String) -> Unit,
     onClear: () -> Unit
 ) {
-    var condition by remember { mutableStateOf(initialCondition) }
-    var minPrice by remember { mutableStateOf(initialMinPrice) }
-    var maxPrice by remember { mutableStateOf(initialMaxPrice) }
-
+    var condition by remember(initialCondition) { mutableStateOf(initialCondition) }
+    var minPrice by remember(initialMinPrice) { mutableStateOf(initialMinPrice) }
+    var maxPrice by remember(initialMaxPrice) { mutableStateOf(initialMaxPrice) }
     val conditions = listOf("Any Condition", "New", "Used - Like New", "Used - Good", "Used - Fair")
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -605,60 +710,44 @@ fun FilterBottomSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Filters", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.align(Alignment.CenterHorizontally))
-
             Text("Condition", style = MaterialTheme.typography.titleMedium)
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(conditions) { item ->
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                conditions.forEach { item ->
+                    val count = conditionCounts[item] ?: 0
+                    val isEnabled = count > 0 || item == "Any Condition"
+                    val labelText = if (isEnabled && item != "Any Condition") "$item ($count)" else item
+
                     FilterChip(
                         selected = item == condition,
                         onClick = { condition = item },
-                        label = { Text(item) }
+                        label = { Text(labelText) },
+                        enabled = isEnabled // Disable if count is 0
                     )
                 }
             }
 
             Text("Price Range", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = minPrice,
-                    onValueChange = { minPrice = it },
-                    label = { Text("Min") },
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-                OutlinedTextField(
-                    value = maxPrice,
-                    onValueChange = { maxPrice = it },
-                    label = { Text("Max") },
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
+                OutlinedTextField(value = minPrice, onValueChange = { minPrice = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Min") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                OutlinedTextField(value = maxPrice, onValueChange = { maxPrice = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Max") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
             }
-
             HorizontalDivider()
-
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                OutlinedButton(onClick = {
-                    onClear()
-                    onApply("Any Condition", "", "")
-                }) {
-                    Text("Clear All")
-                }
+                OutlinedButton(onClick = { onClear() }) { Text("Clear All") }
                 Spacer(Modifier.width(16.dp))
-                Button(onClick = { onApply(condition, minPrice, maxPrice) }) {
-                    Text("Apply Filters")
-                }
+                Button(onClick = { onApply(condition, minPrice, maxPrice) }) { Text("Apply Filters") }
             }
         }
     }
 }
 
-
 @Composable
-fun ProductCard(
-    product: Product,
-    onClick: () -> Unit
-) {
+fun ProductCard(product: Product, onClick: () -> Unit) {
     val isAuction = product.auctionInfo != null
     Card(
         modifier = Modifier
@@ -670,115 +759,58 @@ fun ProductCard(
     ) {
         Box {
             Image(
-                painter = rememberAsyncImagePainter(
-                    model = product.imageUrls.firstOrNull() ?: "https://placehold.co/300x300?text=No+Image"
-                ),
+                painter = rememberAsyncImagePainter(model = product.imageUrls.firstOrNull() ?: "https://placehold.co/300x300?text=No+Image"),
                 contentDescription = product.name,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f),
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                 contentScale = ContentScale.Crop
             )
-
             if (product.isSold) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .background(Color.Black.copy(alpha = 0.5f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "SOLD",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
+                Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.5f)), contentAlignment = Alignment.Center) {
+                    Text("SOLD", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
                 }
             }
-
             if (isAuction) {
+                Surface(modifier = Modifier.align(Alignment.TopStart).padding(8.dp), shape = CircleShape, color = MaterialTheme.colorScheme.tertiary, contentColor = MaterialTheme.colorScheme.onTertiary) {
+                    Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Gavel, "Auction", modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)); Text("AUCTION", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            if (product.isFeatured) {
                 Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.tertiary,
-                    contentColor = MaterialTheme.colorScheme.onTertiary
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    color = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Gavel, contentDescription = "Auction", modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Star, "Featured", modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("AUCTION", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "FEATURED",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
                 }
             }
         }
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                text = product.name,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            val priceText = if (product.auctionInfo != null) {
-                "Starts at ${formatPrice(product.auctionInfo.startingPrice)}"
-            } else {
-                formatPrice(product.price)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(product.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val priceText = if (isAuction) "Starts at ${formatPrice(product.auctionInfo!!.startingPrice)}" else formatPrice(product.price)
+            Text(priceText, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 2.dp)) {
+                Text( "by ${product.sellerDisplayName ?: "Unknown"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (product.sellerIsVerified) Icon(Icons.Default.Verified, "Verified Seller", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
             }
-            Text(
-                text = priceText,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.padding(top = 2.dp)
-            ) {
-                Text(
-                    text = "by ${product.sellerDisplayName ?: "Unknown"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (product.sellerIsVerified) {
-                    Icon(
-                        Icons.Default.Verified,
-                        contentDescription = "Verified Seller",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val timeRemaining = getTimeRemaining(product.expiresAt)
-                if (timeRemaining.isNotBlank()) {
-                    InfoChip(icon = Icons.Default.Timer, text = timeRemaining)
-                } else {
-                    Spacer(Modifier.weight(1f))
-                }
-
-                product.distanceKm?.let { distance ->
-                    InfoChip(icon = Icons.Default.LocationOn, text = "${"%.1f".format(distance)} km")
-                }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                val displayTime = if (isAuction) product.auctionInfo?.endTime else product.expiresAt
+                val timeRemaining = getTimeRemaining(displayTime)
+                if (timeRemaining.isNotBlank() && !product.isSold) InfoChip(icon = Icons.Default.Timer, text = timeRemaining) else Spacer(Modifier.weight(1f))
+                product.distanceKm?.let { distance -> InfoChip(icon = Icons.Default.LocationOn, text = "${"%.1f".format(distance)} km") }
             }
         }
     }
@@ -786,21 +818,9 @@ fun ProductCard(
 
 @Composable
 private fun InfoChip(icon: ImageVector, text: String) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(icon, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -813,12 +833,10 @@ private fun getTimeRemaining(expiryDate: Date?): String {
     if (expiryDate == null) return ""
     val now = Date()
     if (now.after(expiryDate)) return "Expired"
-
     val diff = expiryDate.time - now.time
     val days = TimeUnit.MILLISECONDS.toDays(diff)
     val hours = TimeUnit.MILLISECONDS.toHours(diff) % 24
     val minutes = TimeUnit.MILLISECONDS.toMinutes(diff) % 60
-
     return when {
         days > 1 -> "Ends in ${days}d"
         days > 0 -> "Ends in ${days}d ${hours}h"

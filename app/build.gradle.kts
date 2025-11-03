@@ -76,6 +76,7 @@ dependencies {
     implementation(libs.androidxLifecycleRuntimeKtx)
     implementation(libs.androidxActivityCompose)
     implementation(libs.androidxNavigationCompose)
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     // Compose (using BOM)
     implementation(platform(libs.androidxComposeBom))

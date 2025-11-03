@@ -25,14 +25,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.ProductAnalytics
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnalyticsScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val productAnalytics by viewModel.productAnalytics.collectAsState()
     val isLoading by viewModel.isLoadingAnalytics.collectAsState()

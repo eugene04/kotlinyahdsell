@@ -11,15 +11,17 @@ sealed class Screen(val route: String) {
     // Screens that are part of the Bottom Navigation within the Main screen
     object Home : Screen("home")
     object Map : Screen("map")
-    object Wishlist : Screen("wishlist")
-    object Chatbot : Screen("chatbot")
+    object NearMe : Screen("near_me") // Added Near Me screen
     object ChatList : Screen("chat_list")
+    object Chatbot : Screen("chatbot")
 
-    object Analytics : Screen("analytics")
 
     // Other screens reachable from various points in the app
+    object Wishlist : Screen("wishlist") // Moved from bottom nav section
+    object Analytics : Screen("analytics")
     object Notifications : Screen("notifications")
     object Admin : Screen("admin")
+    object AdminFees : Screen("admin_fees") // Added Admin Fees screen
     object EditProfile : Screen("edit_profile")
     object Swaps : Screen("swaps")
     object SavedSearches : Screen("saved_searches")

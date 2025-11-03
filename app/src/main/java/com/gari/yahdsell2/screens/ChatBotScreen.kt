@@ -15,13 +15,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ChatViewModel
 import com.gari.yahdsell2.model.ChatbotMessage
 import kotlinx.coroutines.launch
 
 @Composable
 fun ChatbotScreen(
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: ChatViewModel = hiltViewModel(),
     bottomNavPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {

@@ -8,32 +8,36 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 
 @Composable
-fun LoginScreen(navController: NavController, viewModel: MainViewModel) {
+fun LoginScreen(
+    navController: NavController,
+    viewModel: AuthViewModel = hiltViewModel()
+) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var attemptedLogin by remember { mutableStateOf(false) }
 
     val userState by viewModel.userState.collectAsState()
 
-    // Navigate when authenticated
+    // This navigation is now primarily handled by the gatekeeper in AppNavigation,
+    // but this serves as a reliable fallback.
     LaunchedEffect(userState) {
         if (userState is UserState.Authenticated) {
             Log.d("LoginScreen", "User authenticated, navigating to Main screen")
-            // ✅ FIXED: Navigate to the Main container screen, not the Home tab directly.
             navController.navigate(Screen.Main.route) {
                 popUpTo(Screen.Login.route) { inclusive = true }
             }
         }
     }
 
-    val errorMessage = when (userState) {
-        is UserState.Error -> (userState as UserState.Error).message
+    val errorMessage = when (val state = userState) {
+        is UserState.Error -> state.message
         else -> null
     }
 

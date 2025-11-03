@@ -2,7 +2,7 @@ package com.gari.yahdsell2.screens
 
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.foundation.BorderStroke // ✅ ADDED
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,11 +35,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.model.UserProfile
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.PaymentViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 import com.google.gson.Gson
 import com.stripe.android.paymentsheet.PaymentSheetResult
 import com.stripe.android.paymentsheet.rememberPaymentSheet
@@ -50,15 +52,16 @@ import java.util.*
 @Composable
 fun UserProfileScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: ProfileViewModel = hiltViewModel(),
+    authViewModel: AuthViewModel = hiltViewModel(),
     userId: String?
 ) {
     val profileUser by viewModel.profileUser.collectAsState()
     val userProducts by viewModel.userProducts.collectAsState()
-    val userState by viewModel.userState.collectAsState()
+    val userState by authViewModel.userState.collectAsState()
     val isFollowing by viewModel.isFollowing.collectAsState()
     val isLoadingFollow by viewModel.isLoadingFollow.collectAsState()
-    val isAdmin by viewModel.isAdmin.collectAsState()
+    val isAdmin by authViewModel.isAdmin.collectAsState()
     val context = LocalContext.current
 
     val isOwnProfile = (userState as? UserState.Authenticated)?.user?.uid == userId
@@ -73,7 +76,7 @@ fun UserProfileScreen(
         if (userId != null) {
             viewModel.fetchUserProfileAndProducts(userId)
             if (isOwnProfile) {
-                viewModel.checkAdminStatus()
+                authViewModel.checkAdminStatus()
             }
         }
     }
@@ -81,16 +84,18 @@ fun UserProfileScreen(
     productToPromote?.let { product ->
         PromotionDialog(
             product = product,
-            viewModel = viewModel,
             onDismiss = { productToPromote = null }
         )
     }
 
+    // ✅ FIX: Updated filtering logic
     val filteredProducts = remember(userProducts, activeTab) {
+        val now = Date()
         when (activeTab) {
             "Sold" -> userProducts.filter { it.isSold }
-            "Expired" -> userProducts.filter { !it.isSold && (it.expiresAt?.before(Date()) == true) }
-            else -> userProducts.filter { !it.isSold && (it.expiresAt?.after(Date()) != false) }
+            "Expired" -> userProducts.filter { !it.isSold && (it.expiresAt?.before(now) == true) }
+            "Active" -> userProducts.filter { !it.isSold && (it.expiresAt?.after(now) ?: false) } // Explicitly check expiry
+            else -> userProducts // Fallback, should ideally not happen with defined tabs
         }
     }
 
@@ -104,11 +109,8 @@ fun UserProfileScreen(
             TopAppBar(
                 title = { Text(profileUser?.displayName ?: "Profile") },
                 navigationIcon = {
-                    val currentRoute = navController.currentBackStackEntry?.destination?.route
-                    if (currentRoute != Screen.UserProfile.route) {
-                        IconButton(onClick = { navController.popBackStack() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
@@ -161,11 +163,11 @@ fun UserProfileScreen(
                     if (filteredProducts.isEmpty()) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             Box(modifier = Modifier.fillMaxWidth().padding(top = 50.dp), contentAlignment = Alignment.Center) {
-                                Text("No ${activeTab.lowercase()} listings yet.")
+                                Text("No ${activeTab.lowercase()} listings found.")
                             }
                         }
                     } else {
-                        items(filteredProducts) { product ->
+                        items(filteredProducts, key = { it.id }) { product -> // Added key
                             UserProfileProductCard(
                                 product = product,
                                 isOwnListing = isOwnProfile,
@@ -182,7 +184,7 @@ fun UserProfileScreen(
                                         viewModel.relistProduct(product.id) { _, message ->
                                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                                         }
-                                    } else { // Relisting from "Expired" tab
+                                    } else { // Relisting from "Expired" tab (Pass product data)
                                         val productJson = Uri.encode(Gson().toJson(product))
                                         navController.navigate(Screen.Submit.createRoute(productJson))
                                     }
@@ -379,8 +381,8 @@ fun ProductTabs(
     onTabSelected: (String) -> Unit,
     isOwnProfile: Boolean
 ) {
-    val tabs = if (isOwnProfile) listOf("Active", "Sold", "Expired") else listOf("Listings")
-    if (tabs.size > 1) {
+    val tabs = if (isOwnProfile) listOf("Active", "Sold", "Expired") else listOf("Listings") // Only show "Listings" for others
+    if (tabs.size > 1) { // Only show tabs if there's more than one option (i.e., for own profile)
         TabRow(
             selectedTabIndex = tabs.indexOf(activeTab)
         ) {
@@ -392,6 +394,15 @@ fun ProductTabs(
                 )
             }
         }
+    } else {
+        // Optionally, show a simple title when viewing someone else's profile
+        Text(
+            "Listings",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 16.dp)
+        )
     }
 }
 
@@ -454,7 +465,7 @@ fun UserProfileProductCard(
                             Text("Relist", style = MaterialTheme.typography.labelSmall)
                         }
                     } else if (product.expiresAt?.after(Date()) == true) { // Active
-                        if (product.auctionInfo == null) {
+                        if (product.auctionInfo == null) { // Only show Mark Sold for non-auctions
                             OutlinedButton(
                                 onClick = onMarkAsSold,
                                 contentPadding = PaddingValues(horizontal = 12.dp),
@@ -490,7 +501,7 @@ fun UserProfileProductCard(
 @Composable
 fun PromotionDialog(
     product: Product,
-    viewModel: MainViewModel,
+    viewModel: PaymentViewModel = hiltViewModel(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -522,7 +533,19 @@ fun PromotionDialog(
         viewModel.createPromotionPaymentIntent(
             promotionType = type,
             onSuccess = { clientSecret ->
-                paymentSheet.presentWithPaymentIntent(clientSecret)
+                // ✅ CHANGED: Handle null secret (free promotion)
+                if (clientSecret == null) {
+                    // This is a free promotion, confirm it directly
+                    viewModel.confirmPromotion(product.id, type) { success, message ->
+                        isLoading = false
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                        if (success) onDismiss()
+                    }
+                } else {
+                    // This is a paid promotion, launch payment sheet
+                    // isLoading remains true until payment callback
+                    paymentSheet.presentWithPaymentIntent(clientSecret)
+                }
             },
             onError = { error ->
                 isLoading = false
@@ -551,7 +574,7 @@ fun PromotionDialog(
                     PromotionOption(
                         title = "Bump to Top",
                         description = "Move your listing to the top of search results for 24 hours.",
-                        price = "$1.00",
+                        price = "$1.00", // This is just display text, the actual fee is fetched from backend
                         onClick = { launchPayment("bump") },
                         isFeatured = false
                     )
@@ -561,7 +584,7 @@ fun PromotionDialog(
                     PromotionOption(
                         title = "Feature Listing",
                         description = "Mark your listing with a 'Featured' badge for the entire listing duration.",
-                        price = "$5.00",
+                        price = "$5.00", // This is just display text
                         onClick = { launchPayment("feature") },
                         isFeatured = true
                     )
@@ -596,4 +619,3 @@ fun PromotionOption(
         }
     }
 }
-

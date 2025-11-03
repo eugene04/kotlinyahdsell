@@ -11,13 +11,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
-import com.gari.yahdsell2.UserState
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.AuthViewModel
+import com.gari.yahdsell2.viewmodel.UserState
 
 @Composable
-fun SignupScreen(navController: NavController, viewModel: MainViewModel) {
+fun SignupScreen(
+    navController: NavController,
+    viewModel: AuthViewModel = hiltViewModel()
+) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
@@ -29,7 +33,7 @@ fun SignupScreen(navController: NavController, viewModel: MainViewModel) {
     // Navigate when authenticated
     LaunchedEffect(userState) {
         if (userState is UserState.Authenticated) {
-            navController.navigate(Screen.Home.route) {
+            navController.navigate(Screen.Main.route) {
                 popUpTo(Screen.Login.route) { inclusive = true }
             }
         }

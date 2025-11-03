@@ -19,7 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.Notification
 import com.gari.yahdsell2.navigation.Screen
 import java.text.SimpleDateFormat
@@ -29,7 +29,7 @@ import java.util.*
 @Composable
 fun NotificationsScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val notifications by viewModel.notifications.collectAsState()
     val isLoading by viewModel.isLoadingNotifications.collectAsState()

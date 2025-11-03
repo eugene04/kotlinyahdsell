@@ -6,7 +6,14 @@ import com.google.firebase.firestore.PropertyName
 import com.google.firebase.firestore.ServerTimestamp
 import kotlinx.parcelize.Parcelize
 import kotlinx.parcelize.RawValue
+import kotlinx.parcelize.WriteWith // Keep this import
 import java.util.Date
+
+// Ensure GeoPointParceler exists in the same package or is imported
+// import com.gari.yahdsell2.model.GeoPointParceler
+// Ensure NullableGeoPointParceler exists in the same package or is imported
+// import com.gari.yahdsell2.model.NullableGeoPointParceler
+
 
 @Parcelize
 data class AuctionInfo(
@@ -26,27 +33,29 @@ data class Product(
     val condition: String = "",
     val imageUrls: List<String> = emptyList(),
     val videoUrl: String? = null,
-    val imageStoragePaths: List<String> = emptyList(),
-    val videoStoragePath: String? = null,
+    val imageStoragePaths: List<String> = emptyList(), // Consider removing if not used client-side
+    val videoStoragePath: String? = null, // Consider removing if not used client-side
     val sellerId: String = "",
     val sellerDisplayName: String = "",
     val sellerProfilePicUrl: String? = null,
     val sellerIsVerified: Boolean = false,
     val sellerAverageRating: Double = 0.0,
-    val sellerLocation: @RawValue GeoPoint? = null,
+    // ✅ FIX: Use the NullableGeoPointParceler for the nullable type GeoPoint?
+    val sellerLocation: @WriteWith<NullableGeoPointParceler> GeoPoint? = null,
     val geohash: String? = null,
     val itemAddress: String? = null,
-    val distanceKm: Double? = null,
+    val distanceKm: Double? = null, // Transient field, not stored in Firestore
     @get:PropertyName("isSold") val isSold: Boolean = false,
     @get:PropertyName("isPaid") val isPaid: Boolean = false,
-    val auctionInfo: @RawValue AuctionInfo? = null,
+    val auctionInfo: @RawValue AuctionInfo? = null, // AuctionInfo is Parcelable, @RawValue ok here
     @ServerTimestamp val createdAt: Date? = null,
     @ServerTimestamp val paidAt: Date? = null,
     @ServerTimestamp val soldAt: Date? = null,
     @ServerTimestamp val expiresAt: Date? = null,
     val viewCount: Int = 0,
     @get:PropertyName("isFeatured") val isFeatured: Boolean = false,
-    @ServerTimestamp val lastBumpedAt: Date? = null
+    @ServerTimestamp val lastBumpedAt: Date? = null,
+    val auctionDurationDays: Int? = null // Added this based on usage in PaymentScreen/ViewModel
 ) : Parcelable
 
 @Parcelize
@@ -64,6 +73,8 @@ data class UserProfile(
     val followerCount: Int = 0,
     val followingCount: Int = 0
 ) : Parcelable
+
+// --- Non-Parcelable Data Classes Below (Keep as is unless needed for Nav Args) ---
 
 data class Comment(
     val id: String = "",
@@ -105,24 +116,29 @@ data class Notification(
     @ServerTimestamp val createdAt: Date? = null
 )
 
+// Only keep Parcelable if passing ChatMessage via nav args
+@Parcelize
 data class ChatMessage(
     val id: String = "",
     val type: String = "text", // "text", "image", "video", "system", "location"
     val text: String = "",
     val imageUrl: String? = null,
     val videoUrl: String? = null,
-    val location: @RawValue GeoPoint? = null,
+    // ✅ FIX: Use the NullableGeoPointParceler for the nullable type GeoPoint?
+    val location: @WriteWith<NullableGeoPointParceler> GeoPoint? = null,
     val senderId: String = "",
     @ServerTimestamp val timestamp: Date? = null
-)
+) : Parcelable
 
+// Parcelizing PrivateChat is complex due to the Map, @RawValue used as fallback
+@Parcelize
 data class PrivateChat(
     val id: String = "",
     val participantIds: List<String> = emptyList(),
     val lastMessage: String = "",
     @ServerTimestamp val lastActivity: Date? = null,
-    val participants: Map<String, UserProfile> = emptyMap()
-)
+    val participants: @RawValue Map<String, UserProfile> = emptyMap() // UserProfile is Parcelable
+) : Parcelable
 
 data class ChatbotMessage(
     val text: String,
@@ -130,12 +146,15 @@ data class ChatbotMessage(
     val isThinking: Boolean = false
 )
 
+// Product itself is Parcelable, @RawValue not strictly needed
+@Parcelize
 data class ProductAnalytics(
-    val product: Product,
+    val product: Product, // Removed @RawValue
     val offerCount: Int = 0,
     val wishlistCount: Int = 0
-)
+) : Parcelable
 
+@Parcelize
 data class ProductSwap(
     val id: String = "",
     val proposingUserId: String = "",
@@ -149,16 +168,18 @@ data class ProductSwap(
     val status: String = "pending", // pending, accepted, rejected
     val cashTopUp: Double? = null,
     @ServerTimestamp val proposedAt: Date? = null
-)
+) : Parcelable
 
+@Parcelize
 data class Bid(
     val id: String = "",
     val bidderId: String = "",
     val bidderName: String = "",
     val amount: Double = 0.0,
     @ServerTimestamp val timestamp: Date? = null
-)
+) : Parcelable
 
+@Parcelize
 data class SavedSearch(
     val id: String = "",
     val userId: String = "",
@@ -168,5 +189,12 @@ data class SavedSearch(
     val maxPrice: Double? = null,
     val condition: String? = null,
     @ServerTimestamp val createdAt: Date? = null
-)
+) : Parcelable
+
+// List<ProductSwap> is Parcelable, @RawValue not needed
+@Parcelize
+data class SwapsData(
+    val incoming: List<ProductSwap> = emptyList(), // Removed @RawValue
+    val outgoing: List<ProductSwap> = emptyList()  // Removed @RawValue
+) : Parcelable
 

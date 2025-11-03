@@ -11,14 +11,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState // Import for scrolling bottom sheet
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll // Import for scrolling bottom sheet
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.* // Import all filled icons
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,12 +31,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle // Use lifecycle-aware collection
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.HomeViewModel // Use HomeViewModel for products & facets
 import com.gari.yahdsell2.model.Product
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.FacetCounts // Import type alias
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -50,6 +51,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.*
+import androidx.compose.runtime.saveable.rememberSaveable
 
 // Data class for cluster items
 data class ProductClusterItem(
@@ -62,28 +64,31 @@ data class ProductClusterItem(
     override fun getZIndex(): Float? = 0f
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class) // Added ExperimentalLayoutApi
 @Composable
 fun MapScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel(),
+    viewModel: HomeViewModel = hiltViewModel(), // Use HomeViewModel
     bottomNavPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    val products by viewModel.products.collectAsState()
-    val userLocation by viewModel.userLocation.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    // Collect state using lifecycle-aware collector
+    val products by viewModel.products.collectAsStateWithLifecycle()
+    val userLocation by viewModel.userLocation.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val facetCounts by viewModel.facetCounts.collectAsStateWithLifecycle() // Collect facets
 
     var mapType by remember { mutableStateOf(MapType.NORMAL) }
     var showFilterSheet by remember { mutableStateOf(false) }
     var showSearchThisAreaButton by remember { mutableStateOf(false) }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
 
-    // Local state for filters
-    var selectedCategory by remember { mutableStateOf("All") }
-    var selectedCondition by remember { mutableStateOf("Any Condition") }
-    var minPrice by remember { mutableStateOf("") }
-    var maxPrice by remember { mutableStateOf("") }
+    // Local state for filters - these will now primarily control client-side filtering
+    // and potentially be passed to the sheet for initialization
+    var selectedCategory by rememberSaveable { mutableStateOf("All") } // Use rememberSaveable
+    var selectedCondition by rememberSaveable { mutableStateOf("Any Condition") } // Use rememberSaveable
+    var minPrice by rememberSaveable { mutableStateOf("") } // Use rememberSaveable
+    var maxPrice by rememberSaveable { mutableStateOf("") } // Use rememberSaveable
 
 
     val cameraPositionState = rememberCameraPositionState {
@@ -91,7 +96,8 @@ fun MapScreen(
     }
     val coroutineScope = rememberCoroutineScope()
 
-    // Apply client-side filters
+    // Apply client-side filters (mainly for map markers if needed, or rely on ViewModel fetch)
+    // You might simplify this if `viewModel.products` already reflects the filters applied during fetch
     val filteredProducts = remember(products, selectedCategory, selectedCondition, minPrice, maxPrice) {
         products.filter { product ->
             val appliedMinPrice = minPrice.toDoubleOrNull()
@@ -133,14 +139,51 @@ fun MapScreen(
     if (showFilterSheet) {
         MapFilterBottomSheet(
             sheetState = sheetState,
+            initialCategory = selectedCategory, // Pass current filter selections
+            initialCondition = selectedCondition,
+            initialMinPrice = minPrice,
+            initialMaxPrice = maxPrice,
+            categoryCounts = facetCounts["category"] ?: emptyMap(), // Pass counts
+            conditionCounts = facetCounts["condition"] ?: emptyMap(), // Pass counts
             onDismiss = { showFilterSheet = false },
             onApply = { condition, min, max, category ->
-                // Update local state, which will trigger recomposition and filtering
+                // Update local state, which will trigger recomposition and client-side filtering
                 selectedCondition = condition
                 minPrice = min
                 maxPrice = max
                 selectedCategory = category
                 showFilterSheet = false
+                // --- ADDED: Trigger fetchProducts with new filters ---
+                val center = cameraPositionState.projection?.visibleRegion?.latLngBounds?.center
+                viewModel.fetchProducts(
+                    latitude = center?.latitude,
+                    longitude = center?.longitude,
+                    query = "", // Assuming map screen doesn't use text query directly
+                    filters = mapOf(
+                        "category" to category.takeIf { it != "All" },
+                        "condition" to condition.takeIf { it != "Any Condition" },
+                        "minPrice" to min.toDoubleOrNull(),
+                        "maxPrice" to max.toDoubleOrNull()
+                    ).filterValues { it != null }
+                )
+                // ----------------------------------------------------
+            },
+            onClear = {
+                // Clear local state
+                selectedCondition = "Any Condition"
+                minPrice = ""
+                maxPrice = ""
+                selectedCategory = "All"
+                // --- ADDED: Trigger fetchProducts with cleared filters ---
+                val center = cameraPositionState.projection?.visibleRegion?.latLngBounds?.center
+                viewModel.fetchProducts(
+                    latitude = center?.latitude,
+                    longitude = center?.longitude,
+                    query = "",
+                    filters = emptyMap() // Send empty map for cleared filters
+                )
+                // ------------------------------------------------------
+                showFilterSheet = false // Hide sheet after clearing
             }
         )
     }
@@ -156,7 +199,7 @@ fun MapScreen(
             onMapClick = { selectedProduct = null }
         ) {
             Clustering(
-                items = filteredProducts.mapNotNull { product -> // Use filtered products
+                items = filteredProducts.mapNotNull { product -> // Use client-side filtered products for markers
                     product.sellerLocation?.let { geoPoint ->
                         ProductClusterItem(product, LatLng(geoPoint.latitude, geoPoint.longitude))
                     }
@@ -212,7 +255,19 @@ fun MapScreen(
             Button(
                 onClick = {
                     val center = cameraPositionState.projection?.visibleRegion?.latLngBounds?.center
-                    viewModel.fetchProducts(center?.latitude, center?.longitude)
+                    // --- UPDATED: Pass current filters when searching area ---
+                    viewModel.fetchProducts(
+                        latitude = center?.latitude,
+                        longitude = center?.longitude,
+                        query = "", // Still assume no text query here
+                        filters = mapOf(
+                            "category" to selectedCategory.takeIf { it != "All" },
+                            "condition" to selectedCondition.takeIf { it != "Any Condition" },
+                            "minPrice" to minPrice.toDoubleOrNull(),
+                            "maxPrice" to maxPrice.toDoubleOrNull()
+                        ).filterValues { it != null }
+                    )
+                    // --------------------------------------------------------
                     showSearchThisAreaButton = false
                 },
                 enabled = !isRefreshing,
@@ -246,89 +301,120 @@ fun MapScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+// --- MODIFIED: MapFilterBottomSheet now accepts counts ---
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MapFilterBottomSheet(
     sheetState: SheetState,
+    initialCategory: String, // Added initial values
+    initialCondition: String,
+    initialMinPrice: String,
+    initialMaxPrice: String,
+    categoryCounts: Map<String, Int>, // Accept category counts
+    conditionCounts: Map<String, Int>, // Accept condition counts
     onDismiss: () -> Unit,
     onApply: (condition: String, minPrice: String, maxPrice: String, category: String) -> Unit,
+    onClear: () -> Unit
 ) {
-    var condition by remember { mutableStateOf("Any Condition") }
-    var minPrice by remember { mutableStateOf("") }
-    var maxPrice by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("All") }
+    // Initialize local state from passed initial values
+    var condition by remember { mutableStateOf(initialCondition) }
+    var minPrice by remember { mutableStateOf(initialMinPrice) }
+    var maxPrice by remember { mutableStateOf(initialMaxPrice) }
+    var category by remember { mutableStateOf(initialCategory) }
 
     val conditions = listOf("Any Condition", "New", "Used - Like New", "Used - Good", "Used - Fair")
-    val categories = listOf("All", "Electronics", "Clothing & Apparel", "Home & Garden", "Furniture", "Vehicles", "Other")
-
+    val categories = listOf("All", "Electronics", "Clothing & Apparel", "Home & Garden", "Furniture", "Vehicles", "Books, Movies & Music", "Collectibles & Art", "Sports & Outdoors", "Toys & Hobbies", "Baby & Kids", "Health & Beauty", "Other")
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
-            modifier = Modifier.padding(16.dp).navigationBarsPadding(),
+            modifier = Modifier
+                .padding(16.dp)
+                .navigationBarsPadding() // Use navigationBarsPadding
+                .verticalScroll(rememberScrollState()), // Make sheet scrollable
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Filters", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.align(Alignment.CenterHorizontally))
 
+            // Category Filter Chips with Counts
             Text("Category", style = MaterialTheme.typography.titleMedium)
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(categories) { item ->
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                categories.forEach { item ->
+                    val count = categoryCounts[item] ?: 0
+                    val labelText = if (count > 0 && item != "All") "$item ($count)" else item
                     FilterChip(
                         selected = item == category,
                         onClick = { category = item },
-                        label = { Text(item) }
+                        label = { Text(labelText) },
+                        enabled = count > 0 || item == "All"
                     )
                 }
             }
 
+            // Condition Filter Chips with Counts
             Text("Condition", style = MaterialTheme.typography.titleMedium)
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(conditions) { item ->
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                conditions.forEach { item ->
+                    val count = conditionCounts[item] ?: 0
+                    val labelText = if (count > 0 && item != "Any Condition") "$item ($count)" else item
                     FilterChip(
                         selected = item == condition,
                         onClick = { condition = item },
-                        label = { Text(item) }
+                        label = { Text(labelText) },
+                        enabled = count > 0 || item == "Any Condition"
                     )
                 }
             }
 
+            // Price Range Input
             Text("Price Range", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = minPrice,
-                    onValueChange = { minPrice = it },
+                    onValueChange = { minPrice = it.filter { char -> char.isDigit() || char == '.' } },
                     label = { Text("Min") },
                     modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal) // Use Decimal
                 )
                 OutlinedTextField(
                     value = maxPrice,
-                    onValueChange = { maxPrice = it },
+                    onValueChange = { maxPrice = it.filter { char -> char.isDigit() || char == '.' } },
                     label = { Text("Max") },
                     modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal) // Use Decimal
                 )
             }
 
             HorizontalDivider()
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            // Action Buttons
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
                 OutlinedButton(onClick = {
+                    // Reset local state first before calling onClear
                     condition = "Any Condition"
                     minPrice = ""
                     maxPrice = ""
                     category = "All"
-                    onApply(condition, minPrice, maxPrice, category)
+                    onClear() // Call clear callback (which also triggers fetch)
                 }) {
                     Text("Clear All")
                 }
                 Spacer(Modifier.width(16.dp))
-                Button(onClick = { onApply(condition, minPrice, maxPrice, category) }) {
+                Button(onClick = { onApply(condition, minPrice, maxPrice, category) }) { // Pass all values
                     Text("Apply Filters")
                 }
             }
         }
     }
 }
+// ---------------------------------------------------
 
 
 /**
@@ -426,4 +512,3 @@ private fun formatPrice(price: Double): String {
     val format = NumberFormat.getCurrencyInstance(Locale.US)
     return format.format(price)
 }
-

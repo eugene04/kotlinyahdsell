@@ -1,5 +1,6 @@
 package com.gari.yahdsell2.screens
 
+import android.os.Bundle
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,15 +20,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.MainViewModel
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.SavedSearch
-import com.gari.yahdsell2.navigation.Screen
+// Removed Screen import as we navigate back implicitly now
+// import com.gari.yahdsell2.navigation.Screen
+
+// Define keys for passing results back
+object SavedSearchResultKeys {
+    const val CRITERIA_KEY = "savedSearchCriteria"
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedSearchesScreen(
     navController: NavController,
-    viewModel: MainViewModel = hiltViewModel()
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
     val savedSearches by viewModel.savedSearches.collectAsState()
     val isLoading by viewModel.isLoadingSavedSearches.collectAsState()
@@ -67,12 +74,21 @@ fun SavedSearchesScreen(
                                 Toast.makeText(context, "Search deleted", Toast.LENGTH_SHORT).show()
                             },
                             onRun = {
-                                // This part is complex as it requires passing filter data back.
-                                // For now, we navigate home. A more advanced implementation
-                                // would use a shared ViewModel or navigation result API.
-                                navController.navigate(Screen.Main.route) {
-                                    popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                                // 1. Package the criteria (use Bundle for simplicity with Nav Component)
+                                val criteriaBundle = Bundle().apply {
+                                    putString("query", search.query)
+                                    putString("category", search.category)
+                                    search.minPrice?.let { putDouble("minPrice", it) }
+                                    search.maxPrice?.let { putDouble("maxPrice", it) }
+                                    putString("condition", search.condition)
                                 }
+                                // 2. Set the result on the previous screen's SavedStateHandle
+                                navController.previousBackStackEntry
+                                    ?.savedStateHandle
+                                    ?.set(SavedSearchResultKeys.CRITERIA_KEY, criteriaBundle)
+
+                                // 3. Navigate back to HomeScreen
+                                navController.popBackStack()
                             }
                         )
                     }
@@ -112,7 +128,7 @@ fun SavedSearchItem(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            IconButton(onClick = onRun) {
+            IconButton(onClick = onRun) { // Trigger the callback
                 Icon(Icons.Default.Search, contentDescription = "Run Search")
             }
             IconButton(onClick = onDelete) {
@@ -124,13 +140,25 @@ fun SavedSearchItem(
 
 private fun buildFilterString(search: SavedSearch): String {
     val parts = mutableListOf<String>()
-    if (search.category != null && search.category != "All") parts.add(search.category)
-    if (search.minPrice != null || search.maxPrice != null) {
-        val min = search.minPrice?.toInt()?.toString() ?: ""
-        val max = search.maxPrice?.toInt()?.toString() ?: ""
-        parts.add("$$min - $$max")
-    }
-    if (search.condition != null && search.condition != "Any Condition") parts.add(search.condition)
-    return if (parts.isEmpty()) "No additional filters" else parts.joinToString(" • ")
-}
+    // Use "Any Category" if category is null or "All"
+    if (search.category != null && search.category != "All") parts.add(search.category) else parts.add("Any Category")
 
+    // Price
+    val min = search.minPrice?.let { "$${it.toInt()}" } ?: ""
+    val max = search.maxPrice?.let { "$${it.toInt()}" } ?: ""
+    if (min.isNotEmpty() || max.isNotEmpty()) {
+        parts.add(when {
+            min.isNotEmpty() && max.isNotEmpty() -> "$min - $max"
+            min.isNotEmpty() -> "$min+"
+            max.isNotEmpty() -> "Up to $max"
+            else -> "" // Should not happen
+        })
+    } else {
+        parts.add("Any Price")
+    }
+
+    // Condition
+    if (search.condition != null && search.condition != "Any Condition") parts.add(search.condition) else parts.add("Any Condition")
+
+    return parts.joinToString(" • ")
+}
