@@ -1,0 +1,37 @@
+src/api/products.ts(6,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/api/products.ts(130,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(161,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(230,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(318,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(368,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(443,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(472,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/products.ts(509,36): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/api/search.ts(4,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/api/swaps.ts(4,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/api/swaps.ts(14,60): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/swaps.ts(66,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/userRoutes.ts(5,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/api/userRoutes.ts(17,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/userRoutes.ts(52,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/api/userRoutes.ts(76,40): error TS7006: Parameter 'transaction' implicitly has an 'any' type.
+src/index.ts(7,15): error TS2307: Cannot find module './firebase' or its corresponding type declarations.
+src/triggers/chats.ts(3,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/triggers/offers.ts(3,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/triggers/reviews.ts(3,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/triggers/reviews.ts(16,61): error TS7006: Parameter 'sum' implicitly has an 'any' type.
+src/triggers/reviews.ts(16,66): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/triggers/scheduled.ts(5,28): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/triggers/scheduled.ts(23,51): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/triggers/scheduled.ts(48,67): error TS7006: Parameter 'bidDoc' implicitly has an 'any' type.
+src/triggers/scheduled.ts(52,55): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/triggers/scheduled.ts(53,53): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/triggers/scheduled.ts(83,32): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/triggers/scheduled.ts(88,103): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/triggers/scheduled.ts(89,101): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/triggers/userTriggers.ts(3,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/utils/notifications.ts(4,20): error TS2307: Cannot find module '../firebase' or its corresponding type declarations.
+src/utils/notifications.ts(41,45): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/utils/notifications.ts(41,78): error TS7006: Parameter 'token' implicitly has an 'any' type.
+src/utils/notifications.ts(69,71): error TS7006: Parameter 'doc' implicitly has an 'any' type.
+src/utils/notifications.ts(70,44): error TS7006: Parameter 'doc' implicitly has an 'any' type.
