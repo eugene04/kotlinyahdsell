@@ -3,14 +3,13 @@ package com.gari.yahdsell2.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.gari.yahdsell2.model.*
+import com.gari.yahdsell2.model.Offer
+import com.gari.yahdsell2.model.Product
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
-import com.google.firebase.firestore.ktx.toObject
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.functions.FirebaseFunctionsException
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,211 +20,179 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ProductDetailViewModel @Inject constructor(
-    private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val functions: FirebaseFunctions
+    private val auth: FirebaseAuth
 ) : ViewModel() {
 
-    private val _selectedProduct = MutableStateFlow<Product?>(null)
-    val selectedProduct: StateFlow<Product?> = _selectedProduct.asStateFlow()
+    private val _product = MutableStateFlow<Product?>(null)
+    val product: StateFlow<Product?> = _product.asStateFlow()
 
-    private val _sellerProfile = MutableStateFlow<UserProfile?>(null)
-    val sellerProfile: StateFlow<UserProfile?> = _sellerProfile.asStateFlow()
+    private val _offersForProduct = MutableStateFlow<List<Offer>>(emptyList())
+    val offersForProduct: StateFlow<List<Offer>> = _offersForProduct.asStateFlow()
 
-    private val _comments = MutableStateFlow<List<Comment>>(emptyList())
-    val comments: StateFlow<List<Comment>> = _comments.asStateFlow()
+    private val _isLoadingOffers = MutableStateFlow(false)
+    val isLoadingOffers: StateFlow<Boolean> = _isLoadingOffers.asStateFlow()
 
-    private val _userHasPendingOffer = MutableStateFlow(false)
-    val userHasPendingOffer: StateFlow<Boolean> = _userHasPendingOffer.asStateFlow()
-
-    private val _isProductInWishlist = MutableStateFlow(false)
-    val isProductInWishlist: StateFlow<Boolean> = _isProductInWishlist.asStateFlow()
-
-    private val _bids = MutableStateFlow<List<Bid>>(emptyList())
-    val bids: StateFlow<List<Bid>> = _bids.asStateFlow()
-
-    private val _isLoadingBids = MutableStateFlow(false)
-    val isLoadingBids: StateFlow<Boolean> = _isLoadingBids.asStateFlow()
-
-    private var productListener: ListenerRegistration? = null
-    private var commentsListener: ListenerRegistration? = null
     private var offersListener: ListenerRegistration? = null
-    private var wishlistListener: ListenerRegistration? = null
-    private var bidsListener: ListenerRegistration? = null
 
-    private fun callApi(action: String, data: Map<String, Any?>): com.google.android.gms.tasks.Task<com.google.firebase.functions.HttpsCallableResult> {
-        val finalData = data.toMutableMap()
-        auth.currentUser?.uid?.let {
-            finalData["bidderId"] = it
-        }
-        return functions.getHttpsCallable("publicApi").call(mapOf("action" to action, "data" to finalData))
-    }
-
-    fun fetchProductDetails(productId: String) {
+    fun loadProduct(productId: String) {
         viewModelScope.launch {
-            resetDetailScreenState()
             try {
-                productListener = firestore.collection("products").document(productId)
-                    .addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.e("ProductDetailViewModel", "Error listening to product details", error)
-                            return@addSnapshotListener
-                        }
-                        val updatedProduct = snapshot?.toObject<Product>()?.copy(id = snapshot.id)
-                        _selectedProduct.value = updatedProduct
+                // 1. Fetch Product Data
+                val document = firestore.collection("products").document(productId).get().await()
+                val fetchedProduct = document.toObject(Product::class.java)
 
-                        if (_sellerProfile.value == null && updatedProduct?.sellerId?.isNotBlank() == true) {
-                            fetchSellerProfile(updatedProduct.sellerId)
-                        }
+                if (fetchedProduct != null) {
+                    var finalProduct = fetchedProduct
+
+                    // 2. Increment View Count (atomic operation)
+                    firestore.collection("products").document(productId)
+                        .update("viewCount", FieldValue.increment(1))
+
+                    // 3. Check if Wishlisted by current user
+                    val currentUser = auth.currentUser
+                    if (currentUser != null) {
+                        val wishlistDoc = firestore.collection("users")
+                            .document(currentUser.uid)
+                            .collection("wishlist")
+                            .document(productId)
+                            .get()
+                            .await()
+
+                        // Update the local excluded field 'isWishlisted'
+                        finalProduct = finalProduct.copy(isWishlisted = wishlistDoc.exists())
                     }
 
-                listenForComments(productId)
-                listenForOffers(productId)
-                listenForWishlistStatus(productId)
-                listenForBids(productId)
-                incrementProductViewCount(productId)
-
-            } catch (e: Exception) {
-                Log.e("ProductDetailViewModel", "Error fetching product details", e)
-            }
-        }
-    }
-
-    private fun fetchSellerProfile(sellerId: String) {
-        viewModelScope.launch {
-            try {
-                val sellerDoc = firestore.collection("users").document(sellerId).get().await()
-                _sellerProfile.value = sellerDoc.toObject<UserProfile>()?.copy(uid = sellerDoc.id)
-            } catch (e: Exception) {
-                Log.e("ProductDetailViewModel", "Error fetching seller profile", e)
-            }
-        }
-    }
-
-    private fun listenForComments(productId: String) {
-        commentsListener?.remove()
-        commentsListener = firestore.collection("products").document(productId)
-            .collection("comments").orderBy("timestamp", Query.Direction.DESCENDING)
-            .addSnapshotListener { snapshot, error ->
-                if (error == null && snapshot != null) {
-                    _comments.value = snapshot.documents.mapNotNull { it.toObject<Comment>()?.copy(id = it.id) }
+                    _product.value = finalProduct
                 }
+            } catch (e: Exception) {
+                Log.e("ProductDetailViewModel", "Error loading product", e)
             }
+        }
     }
 
-    private fun listenForOffers(productId: String) {
-        val currentUser = auth.currentUser ?: return
-        offersListener?.remove()
-        offersListener = firestore.collection("products").document(productId).collection("offers")
-            .whereEqualTo("buyerId", currentUser.uid)
-            .whereEqualTo("status", "pending")
-            .addSnapshotListener { snapshot, _ -> _userHasPendingOffer.value = snapshot != null && !snapshot.isEmpty }
-    }
+    fun toggleWishlist(productId: String) {
+        val user = auth.currentUser ?: return
+        val currentProduct = _product.value ?: return
 
-    private fun listenForWishlistStatus(productId: String) {
-        val currentUser = auth.currentUser ?: return
-        wishlistListener?.remove()
-        wishlistListener = firestore.collection("users").document(currentUser.uid)
-            .collection("wishlist").document(productId)
-            .addSnapshotListener { snapshot, _ -> _isProductInWishlist.value = snapshot != null && snapshot.exists() }
-    }
-
-    fun toggleWishlistForItem(product: Product) {
-        val currentUser = auth.currentUser ?: return
-        if (currentUser.uid == product.sellerId) return
         viewModelScope.launch {
+            val wishlistRef = firestore.collection("users")
+                .document(user.uid)
+                .collection("wishlist")
+                .document(productId)
+
+            val productRef = firestore.collection("products").document(productId)
+
             try {
-                val wishlistItemRef = firestore.collection("users").document(currentUser.uid)
-                    .collection("wishlist").document(product.id)
-                if (_isProductInWishlist.value) {
-                    wishlistItemRef.delete().await()
+                if (currentProduct.isWishlisted) {
+                    // Remove from wishlist
+                    wishlistRef.delete().await()
+                    // Decrement global save count
+                    productRef.update("saveCount", FieldValue.increment(-1))
+
+                    _product.value = currentProduct.copy(isWishlisted = false)
                 } else {
-                    wishlistItemRef.set(mapOf("savedAt" to com.google.firebase.Timestamp.now(), "productId" to product.id)).await()
+                    // Add to wishlist
+                    // We save a small snapshot of the product to the wishlist for easy querying later
+                    wishlistRef.set(currentProduct).await()
+                    // Increment global save count
+                    productRef.update("saveCount", FieldValue.increment(1))
+
+                    _product.value = currentProduct.copy(isWishlisted = false)
                 }
             } catch (e: Exception) {
-                Log.e("ProductDetailViewModel", "Error toggling wishlist item", e)
+                Log.e("ProductDetailViewModel", "Error toggling wishlist", e)
             }
         }
-    }
-
-    fun postComment(productId: String, text: String) {
-        val currentUser = auth.currentUser ?: return
-        val comment = Comment(
-            text = text, userId = currentUser.uid,
-            userName = currentUser.displayName ?: "Anonymous",
-            userPhotoURL = currentUser.photoUrl?.toString(),
-        )
-        firestore.collection("products").document(productId).collection("comments").add(comment)
-    }
-
-    fun submitOffer(productId: String, amount: Double) {
-        val currentUser = auth.currentUser ?: return
-        val product = _selectedProduct.value ?: return
-        val offer = Offer(
-            buyerId = currentUser.uid, buyerName = currentUser.displayName ?: "Anonymous",
-            sellerId = product.sellerId, offerAmount = amount, status = "pending"
-        )
-        firestore.collection("products").document(productId).collection("offers").add(offer)
-    }
-
-    private fun listenForBids(productId: String) {
-        _isLoadingBids.value = true
-        bidsListener?.remove()
-        bidsListener = firestore.collection("products").document(productId)
-            .collection("bids").orderBy("timestamp", Query.Direction.DESCENDING)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e("ProductDetailViewModel", "Error listening for bids", error)
-                } else if (snapshot != null) {
-                    _bids.value = snapshot.documents.mapNotNull { it.toObject<Bid>()?.copy(id = it.id) }
-                }
-                _isLoadingBids.value = false
-            }
     }
 
     fun placeBid(productId: String, amount: Double, onResult: (Boolean, String) -> Unit) {
-        if (auth.currentUser == null) {
-            return onResult(false, "You must be logged in to place a bid.")
+        val user = auth.currentUser
+        if (user == null) {
+            onResult(false, "You must be logged in to bid.")
+            return
         }
+
         viewModelScope.launch {
             try {
-                val data = hashMapOf("productId" to productId, "amount" to amount)
-                callApi("placeBid", data).await()
+                // In a real app, utilize a Transaction here to prevent race conditions
+                val productRef = firestore.collection("products").document(productId)
+
+                firestore.runTransaction { transaction ->
+                    val snapshot = transaction.get(productRef)
+                    val currentBid = snapshot.getDouble("auctionInfo.currentBid") ?: snapshot.getDouble("startingPrice") ?: 0.0
+
+                    if (amount <= currentBid) {
+                        throw Exception("Bid must be higher than current price.")
+                    }
+
+                    // Update Auction Info
+                    transaction.update(productRef, mapOf(
+                        "auctionInfo.currentBid" to amount,
+                        "auctionInfo.leadingBidderId" to user.uid
+                    ))
+
+                    // Record the bid in a subcollection
+                    val bidData = mapOf(
+                        "bidderId" to user.uid,
+                        "bidderName" to (user.displayName ?: "Anonymous"),
+                        "amount" to amount,
+                        "timestamp" to FieldValue.serverTimestamp()
+                    )
+                    transaction.set(productRef.collection("bids").document(), bidData)
+                }.await()
+
+                // Refresh product data
+                loadProduct(productId)
                 onResult(true, "Bid placed successfully!")
+
             } catch (e: Exception) {
-                Log.e("ProductDetailViewModel", "Error placing bid", e)
-                val message = if (e is FirebaseFunctionsException) e.message else "An unknown error occurred."
-                onResult(false, message ?: "Failed to place bid.")
+                Log.e("ProductDetailViewModel", "Bid failed", e)
+                onResult(false, e.message ?: "Failed to place bid")
             }
         }
     }
 
-    private fun incrementProductViewCount(productId: String) {
+    // --- Offers Management (for Sellers) ---
+
+    fun listenForProductOffers(productId: String) {
+        _isLoadingOffers.value = true
+        offersListener?.remove()
+
+        offersListener = firestore.collection("products").document(productId)
+            .collection("offers")
+            .orderBy("timestamp", Query.Direction.DESCENDING)
+            .addSnapshotListener { snapshot, e ->
+                _isLoadingOffers.value = false
+                if (e != null) {
+                    Log.e("ProductDetailViewModel", "Listen failed", e)
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    _offersForProduct.value = snapshot.toObjects(Offer::class.java).map { it.copy(id = it.id) }
+                }
+            }
+    }
+
+    fun respondToOffer(offerId: String, accept: Boolean) {
+        val productId = _product.value?.id ?: return
+        val status = if (accept) "accepted" else "rejected"
+
         viewModelScope.launch {
             try {
-                callApi("incrementProductViewCount", mapOf("productId" to productId)).await()
+                firestore.collection("products").document(productId)
+                    .collection("offers").document(offerId)
+                    .update("status", status)
+                    .await()
             } catch (e: Exception) {
-                Log.w("ProductDetailViewModel", "Failed to increment view count for $productId", e)
+                Log.e("ProductDetailViewModel", "Error responding to offer", e)
             }
         }
-    }
-
-    private fun resetDetailScreenState() {
-        _selectedProduct.value = null
-        _sellerProfile.value = null
-        _comments.value = emptyList()
-        _userHasPendingOffer.value = false
-        _isProductInWishlist.value = false
-        _bids.value = emptyList()
-        productListener?.remove()
-        commentsListener?.remove()
-        offersListener?.remove()
-        wishlistListener?.remove()
-        bidsListener?.remove()
     }
 
     override fun onCleared() {
         super.onCleared()
-        resetDetailScreenState()
+        offersListener?.remove()
     }
 }

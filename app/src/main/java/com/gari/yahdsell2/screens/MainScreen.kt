@@ -1,27 +1,16 @@
 package com.gari.yahdsell2.screens
 
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.NearMe // ✅ ADDED Icon import
+import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -30,85 +19,82 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.gari.yahdsell2.navigation.Screen
-import com.gari.yahdsell2.viewmodel.AuthViewModel
-import com.gari.yahdsell2.viewmodel.UserState
 
-sealed class BottomNavItem(val route: String, val icon: ImageVector, val label: String) {
-    object Home : BottomNavItem(Screen.Home.route, Icons.Default.Home, "Home")
-    object Map : BottomNavItem(Screen.Map.route, Icons.Default.Map, "Map")
-    // ✅ ADDED Near Me Item Definition
-    object NearMe : BottomNavItem(Screen.NearMe.route, Icons.Default.NearMe, "Near Me")
-    object ChatList : BottomNavItem(Screen.ChatList.route, Icons.AutoMirrored.Filled.Chat, "Chats")
-    object Chatbot : BottomNavItem(Screen.Chatbot.route, Icons.Default.SmartToy, "AI Assistant")
+// Define Bottom Navigation Items
+sealed class BottomNavItem(val route: String, val label: String, val icon: ImageVector) {
+    object Home : BottomNavItem(Screen.Home.route, "Home", Icons.Default.Home)
+    object Map : BottomNavItem(Screen.Map.route, "Map", Icons.Default.Map)
+    object NearMe : BottomNavItem(Screen.NearMe.route, "Near Me", Icons.Default.NearMe)
+    object ChatList : BottomNavItem(Screen.ChatList.route, "Chats", Icons.AutoMirrored.Filled.Chat)
+    object Chatbot : BottomNavItem(Screen.Chatbot.route, "Ask AI", Icons.Default.SmartToy)
 }
 
 @Composable
 fun MainScreen(
-    mainNavController: NavHostController,
-    authViewModel: AuthViewModel = hiltViewModel(),
-    toggleTheme: () -> Unit
+    mainNavController: NavHostController, // Standardized name used in AppNavigation
+    toggleTheme: () -> Unit,
+    showLoginOnStart: Boolean = false // Added to handle the login prompt requirement
 ) {
+    // This internal navController handles switching TABS (Home, Map, etc.)
     val bottomNavController = rememberNavController()
-    val userState by authViewModel.userState.collectAsState()
+
+    // State to control the login dialog
+    var showLoginDialog by remember { mutableStateOf(showLoginOnStart) }
 
     Scaffold(
-        bottomBar = {
-            BottomNavigationBar(navController = bottomNavController)
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    if (userState is UserState.Authenticated) {
-                        mainNavController.navigate(Screen.Submit.createRoute())
-                    } else {
-                        // Consider user feedback about mandatory login [2025-01-07]
-                        mainNavController.navigate(Screen.Login.route)
-                    }
-                },
-                containerColor = MaterialTheme.colorScheme.secondary
-            ) {
-                Icon(Icons.Filled.Add, "Add Item", tint = MaterialTheme.colorScheme.onSecondary)
-            }
-        }
+        bottomBar = { BottomNavigationBar(bottomNavController) }
     ) { innerPadding ->
+
+        // Show the prompt if requested (e.g. from RedirectToLogin)
+        if (showLoginDialog) {
+            LoginPromptDialog(
+                onDismiss = { showLoginDialog = false },
+                onLogin = {
+                    showLoginDialog = false
+                    // Navigate to the full login screen
+                    mainNavController.navigate(Screen.Login.route)
+                },
+                onSignup = {
+                    showLoginDialog = false
+                    mainNavController.navigate(Screen.Signup.route)
+                }
+            )
+        }
+
+        // Host for Bottom Tabs
         NavHost(
             navController = bottomNavController,
-            startDestination = BottomNavItem.Home.route // Keep Home as the default start
+            startDestination = Screen.Home.route,
+            modifier = Modifier.padding(innerPadding)
         ) {
-            composable(BottomNavItem.Home.route) {
+            composable(Screen.Home.route) {
                 HomeScreen(
-                    navController = mainNavController,
+                    navController = mainNavController, // Pass main nav for global navigation (details, profile)
                     toggleTheme = toggleTheme,
-                    bottomNavPadding = innerPadding,
-                    modifier = Modifier.fillMaxSize()
+                    bottomNavPadding = innerPadding
                 )
             }
-            composable(BottomNavItem.Map.route) {
+            composable(Screen.Map.route) {
                 MapScreen(
                     navController = mainNavController,
-                    bottomNavPadding = innerPadding,
-                    modifier = Modifier.fillMaxSize()
+                    bottomNavPadding = innerPadding
                 )
             }
-            // ✅ ADDED Composable for the NearMeScreen
-            composable(BottomNavItem.NearMe.route) {
+            composable(Screen.NearMe.route) {
                 NearMeScreen(
                     navController = mainNavController,
-                    bottomNavPadding = innerPadding,
-                    modifier = Modifier.fillMaxSize()
+                    bottomNavPadding = innerPadding
                 )
             }
-            composable(BottomNavItem.ChatList.route) {
+            composable(Screen.ChatList.route) {
                 ChatListScreen(
                     navController = mainNavController,
-                    bottomNavPadding = innerPadding,
-                    modifier = Modifier.fillMaxSize()
+                    bottomNavPadding = innerPadding
                 )
             }
-            composable(BottomNavItem.Chatbot.route) {
+            composable(Screen.Chatbot.route) {
                 ChatbotScreen(
-                    bottomNavPadding = innerPadding,
-                    modifier = Modifier.fillMaxSize()
+                    bottomNavPadding = innerPadding
                 )
             }
         }
@@ -120,7 +106,7 @@ fun BottomNavigationBar(navController: NavHostController) {
     val items = listOf(
         BottomNavItem.Home,
         BottomNavItem.Map,
-        BottomNavItem.NearMe, // ✅ ADDED Near Me item to the list
+        BottomNavItem.NearMe,
         BottomNavItem.ChatList,
         BottomNavItem.Chatbot,
     )

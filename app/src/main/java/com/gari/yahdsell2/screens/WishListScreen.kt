@@ -31,7 +31,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WishlistScreen(
+fun WishListScreen(
     navController: NavController,
     viewModel: WishlistViewModel = hiltViewModel()
 ) {
@@ -132,7 +132,7 @@ fun WishlistItemCard(
         ) {
             Image(
                 painter = rememberAsyncImagePainter(
-                    model = product.imageUrls.firstOrNull() ?: "https://placehold.co/200x200?text=No+Image"
+                    model = product.imageUrls.firstOrNull()?:"".firstOrNull() ?: "https://placehold.co/200x200?text=No+Image"
                 ),
                 contentDescription = product.name,
                 modifier = Modifier

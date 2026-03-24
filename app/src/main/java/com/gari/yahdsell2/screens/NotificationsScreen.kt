@@ -44,7 +44,7 @@ fun NotificationsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.clearAllNotifications { success, message ->
+                        viewModel.clearAllNotifications { _, message ->
                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         }
                         showClearDialog = false
@@ -95,7 +95,7 @@ fun NotificationsScreen(
                         NotificationItem(
                             notification = notification,
                             onClick = {
-                                viewModel.markNotificationAsRead(notification.id)
+                                viewModel.markNotificationRead(notification.id)
                                 // Navigate based on notification data if available
                                 val route = notification.data["productId"]?.let {
                                     Screen.ProductDetail.createRoute(it)
@@ -153,4 +153,3 @@ fun NotificationItem(
         }
     }
 }
-

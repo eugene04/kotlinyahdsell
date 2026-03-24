@@ -7,6 +7,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -14,17 +16,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil.compose.rememberAsyncImagePainter
-import com.gari.yahdsell2.viewmodel.ChatViewModel
-import com.gari.yahdsell2.model.PrivateChat
 import com.gari.yahdsell2.navigation.Screen
-import com.google.accompanist.swiperefresh.SwipeRefresh
-import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+import com.gari.yahdsell2.viewmodel.ChatViewModel
+import com.gari.yahdsell2.viewmodel.ChatViewData
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -43,6 +44,19 @@ fun ChatListScreen(
         viewModel.fetchChatList()
     }
 
+    val pullToRefreshState = rememberPullToRefreshState()
+    if (pullToRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.fetchChatList()
+        }
+    }
+
+    LaunchedEffect(isLoading) {
+        if (!isLoading) {
+            pullToRefreshState.endRefresh()
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -55,34 +69,28 @@ fun ChatListScreen(
             )
         }
     ) { localScaffoldPadding ->
-        SwipeRefresh(
-            state = rememberSwipeRefreshState(isRefreshing = isLoading),
-            onRefresh = { viewModel.fetchChatList() },
+        Box(
             modifier = Modifier
+                .nestedScroll(pullToRefreshState.nestedScrollConnection)
                 .padding(bottom = bottomNavPadding.calculateBottomPadding())
                 .padding(top = localScaffoldPadding.calculateTopPadding())
                 .fillMaxSize()
         ) {
-            if (isLoading && chatList.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (chatList.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("You have no active chats yet.")
+            if (chatList.isEmpty() && !isLoading) {
+                Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("You have no active chats yet. Pull down to refresh.")
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize()
-                ) {
-                    items(chatList) { chat ->
+                ) {                    items(chatList, key = { it.chat.id }) { chatViewData ->
                         ChatListItem(
-                            chat = chat,
-                            onClick = { otherParticipant ->
+                            chatData = chatViewData,
+                            onClick = { 
                                 navController.navigate(
                                     Screen.PrivateChat.createRoute(
-                                        recipientId = otherParticipant.uid,
-                                        recipientName = otherParticipant.displayName
+                                        recipientId = chatViewData.otherParticipant.uid,
+                                        recipientName = chatViewData.otherParticipant.displayName
                                     )
                                 )
                             }
@@ -91,59 +99,61 @@ fun ChatListScreen(
                     }
                 }
             }
+
+            PullToRefreshContainer(
+                state = pullToRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }
 
 @Composable
 fun ChatListItem(
-    chat: PrivateChat,
-    onClick: (otherParticipant: com.gari.yahdsell2.model.UserProfile) -> Unit
+    chatData: ChatViewData,
+    onClick: () -> Unit
 ) {
-    if (chat.participants.values.isNotEmpty()) {
-        val otherParticipant = chat.participants.values.first()
-        val lastMessageTimestamp = chat.lastActivity?.let {
-            formatChatListTimestamp(it)
-        } ?: ""
+    val lastMessageTimestamp = chatData.chat.lastActivity?.let {
+        formatChatListTimestamp(it)
+    } ?: ""
 
-        Row(
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painter = rememberAsyncImagePainter(
+                model = chatData.otherParticipant.profilePicUrl ?: "https://placehold.co/100x100?text=${chatData.otherParticipant.displayName.firstOrNull()}"
+            ),
+            contentDescription = "Avatar",
             modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onClick(otherParticipant) }
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Image(
-                painter = rememberAsyncImagePainter(
-                    model = otherParticipant.profilePicUrl ?: "https://placehold.co/100x100?text=${otherParticipant.displayName.firstOrNull()}"
-                ),
-                contentDescription = "Avatar",
-                modifier = Modifier
-                    .size(50.dp)
-                    .clip(CircleShape)
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = otherParticipant.displayName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = chat.lastMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.width(8.dp))
+                .size(50.dp)
+                .clip(CircleShape)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = lastMessageTimestamp,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = chatData.otherParticipant.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = chatData.chat.lastMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = lastMessageTimestamp,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -158,4 +168,3 @@ private fun formatChatListTimestamp(date: Date): String {
         SimpleDateFormat("MMM d", Locale.getDefault()).format(date)
     }
 }
-

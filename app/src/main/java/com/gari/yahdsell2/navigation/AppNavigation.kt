@@ -1,144 +1,138 @@
 package com.gari.yahdsell2.navigation
 
-import android.net.Uri
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.gari.yahdsell2.screens.*
-import com.gari.yahdsell2.viewmodel.AuthViewModel
-import com.gari.yahdsell2.viewmodel.UserState
 
 @Composable
 fun AppNavigation(toggleTheme: () -> Unit) {
     val navController = rememberNavController()
-    val authViewModel: AuthViewModel = hiltViewModel()
-    val userState by authViewModel.userState.collectAsState()
-
-    // The NavHost's start destination will now be determined by the user's auth state.
-    // However, we will use a "blank" loading screen as the technical start destination
-    // to avoid screen flicker while the auth state is being resolved.
-    val startDestination = "auth_handler"
+    val startDestination = Screen.Main.route
 
     NavHost(navController = navController, startDestination = startDestination) {
 
-        // This composable acts as a gatekeeper. It checks the auth state and navigates
-        // to the correct screen (Login or Main) immediately.
-        composable("auth_handler") {
-            LaunchedEffect(userState) {
-                when (userState) {
-                    is UserState.Authenticated -> {
-                        navController.navigate(Screen.Main.route) {
-                            popUpTo("auth_handler") { inclusive = true }
-                        }
-                    }
-                    is UserState.Unauthenticated -> {
-                        navController.navigate(Screen.Login.route) {
-                            popUpTo("auth_handler") { inclusive = true }
-                        }
-                    }
-                    is UserState.Loading -> {
-                        // While loading, it shows a blank screen, which is fine
-                        // as it's a very brief state on app open.
-                    }
-                    is UserState.Error -> {
-                        // On Error, we default to the Login screen.
-                        navController.navigate(Screen.Login.route) {
-                            popUpTo("auth_handler") { inclusive = true }
-                        }
-                    }
-                }
-            }
-            // Display nothing while handling auth state
+        // --- Auth ---
+        composable(Screen.Login.route) { LoginScreen(navController) }
+        composable(Screen.Signup.route) { SignupScreen(navController) }
+
+        // --- Main Screen (Home, Map, etc.) ---
+        composable(
+            route = "${Screen.Main.route}?showLogin={showLogin}",
+            arguments = listOf(navArgument("showLogin") {
+                type = NavType.BoolType
+                defaultValue = false
+            })
+        ) { backStackEntry ->
+            val showLogin = backStackEntry.arguments?.getBoolean("showLogin") ?: false
+            MainScreen(
+                mainNavController = navController,
+                toggleTheme = toggleTheme,
+                showLoginOnStart = showLogin
+            )
         }
 
-        composable(Screen.Login.route) {
-            LoginScreen(navController = navController)
+        // --- Simple Screens ---
+        composable(Screen.Wishlist.route) { WishListScreen(navController) }
+        composable(Screen.Analytics.route) { AnalyticsScreen(navController) }
+        composable(Screen.Notifications.route) { NotificationsScreen(navController) }
+        composable(Screen.Admin.route) { AdminScreen(navController) }
+        composable(Screen.AdminFees.route) { AdminFeesScreen(navController) }
+        composable(Screen.EditProfile.route) { EditProfileScreen(navController) }
+        composable(Screen.Swaps.route) { SwapsScreen(navController) }
+        composable(Screen.SavedSearches.route) { SavedSearchesScreen(navController) }
+
+        // --- Product Detail ---
+        composable(
+            Screen.ProductDetail.route,
+            arguments = listOf(navArgument("productId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val productId = backStackEntry.arguments?.getString("productId") ?: return@composable
+            ProductDetailScreen(navController = navController, productId = productId)
         }
-        composable(Screen.Signup.route) {
-            SignupScreen(navController = navController)
+
+        // --- User Profile ---
+        composable(
+            Screen.UserProfile.route,
+            arguments = listOf(navArgument("userId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val userId = backStackEntry.arguments?.getString("userId") ?: return@composable
+            UserProfileScreen(navController = navController, userId = userId)
         }
-        // This is the main entry point for logged-in users. It contains the bottom nav.
-        composable(Screen.Main.route) {
-            MainScreen(mainNavController = navController, toggleTheme = toggleTheme)
+
+        // --- Submission Form (Arguments are optional/nullable in the screen, so direct pass is fine) ---
+        composable(
+            Screen.Submit.route,
+            arguments = listOf(
+                navArgument("productIdToEdit") { nullable = true },
+                navArgument("productToRelistJson") { nullable = true }
+            )
+        ) { backStackEntry ->
+            val productIdToEdit = backStackEntry.arguments?.getString("productIdToEdit")
+            val productToRelistJson = backStackEntry.arguments?.getString("productToRelistJson")
+            SubmissionFormScreen(
+                navController = navController,
+                productIdToEdit = productIdToEdit,
+                productToRelistJson = productToRelistJson
+            )
         }
-        composable(Screen.ProductDetail.route) { backStackEntry ->
-            val productId = backStackEntry.arguments?.getString("productId")
-            if (productId != null) {
-                ProductDetailScreen(navController, productId = productId)
-            }
-        }
-        composable(Screen.Submit.route) { backStackEntry ->
-            val productJson = backStackEntry.arguments?.getString("productToRelistJson")
-            SubmissionFormScreen(navController, productToRelistJson = productJson, productIdToEdit = null)
-        }
-        composable(Screen.EditProduct.route) { backStackEntry ->
-            val productId = backStackEntry.arguments?.getString("productId")
-            SubmissionFormScreen(navController, productToRelistJson = null, productIdToEdit = productId)
-        }
-        composable(Screen.Payment.route) { backStackEntry ->
+
+        // --- Payment (Arguments are optional/nullable in the screen) ---
+        composable(
+            Screen.Payment.route,
+            arguments = listOf(
+                navArgument("productId") { nullable = true },
+                navArgument("productJson") { nullable = true }
+            )
+        ) { backStackEntry ->
             val productId = backStackEntry.arguments?.getString("productId")
             val productJson = backStackEntry.arguments?.getString("productJson")
-            if (productJson != null && productId != null) {
-                PaymentScreen(navController, viewModel = hiltViewModel(), productId = productId, productJson = productJson)
-            }
+            PaymentScreen(navController, productId = productId, productJson = productJson)
         }
-        composable(Screen.UserProfile.route) { backStackEntry ->
-            val userId = backStackEntry.arguments?.getString("userId")
-            if (userId != null) {
-                UserProfileScreen(navController, userId = userId)
-            }
+
+        // --- Private Chat (Requires non-null strings) ---
+        composable(
+            Screen.PrivateChat.route,
+            arguments = listOf(
+                navArgument("recipientId") { type = NavType.StringType },
+                navArgument("recipientName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            // ✅ FIX: Use Elvis operator (?: "") to ensure non-null String
+            val recipientId = backStackEntry.arguments?.getString("recipientId") ?: ""
+            val recipientName = backStackEntry.arguments?.getString("recipientName") ?: ""
+            PrivateChatScreen(navController, recipientId = recipientId, recipientName = recipientName)
         }
-        composable(Screen.SellerReviews.route) { backStackEntry ->
-            val sellerId = backStackEntry.arguments?.getString("sellerId")
-            val sellerName = backStackEntry.arguments?.getString("sellerName")?.let { Uri.decode(it) }
-            if (sellerId != null && sellerName != null) {
-                SellerReviewScreen(navController, sellerId = sellerId, sellerName = sellerName)
-            }
+
+        // --- Seller Reviews (Requires non-null strings) ---
+        composable(
+            Screen.SellerReviews.route,
+            arguments = listOf(
+                navArgument("sellerId") { type = NavType.StringType },
+                navArgument("sellerName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            // ✅ FIX: Use Elvis operator
+            val sellerId = backStackEntry.arguments?.getString("sellerId") ?: ""
+            val sellerName = backStackEntry.arguments?.getString("sellerName") ?: ""
+            SellerReviewScreen(navController, sellerId = sellerId, sellerName = sellerName)
         }
-        composable(Screen.Offers.route) { backStackEntry ->
-            val productId = backStackEntry.arguments?.getString("productId")
-            val productName = backStackEntry.arguments?.getString("productName")?.let { Uri.decode(it) }
-            if (productId != null && productName != null) {
-                OffersScreen(navController, viewModel = hiltViewModel(), productId = productId, productName = productName)
-            }
+
+        // --- Offers (Requires non-null strings) ---
+        composable(
+            Screen.Offers.route,
+            arguments = listOf(
+                navArgument("productId") { type = NavType.StringType },
+                navArgument("productName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            // ✅ FIX: Use Elvis operator
+            val productId = backStackEntry.arguments?.getString("productId") ?: ""
+            val productName = backStackEntry.arguments?.getString("productName") ?: ""
+            OffersScreen(navController, productId = productId, productName = productName)
         }
-        composable(Screen.EditProfile.route) {
-            EditProfileScreen(navController)
-        }
-        composable(Screen.Admin.route) {
-            AdminScreen(navController)
-        }
-        composable(Screen.AdminFees.route) { // Added Admin Fees route
-            AdminFeesScreen(navController)
-        }
-        composable(Screen.Notifications.route) {
-            NotificationsScreen(navController)
-        }
-        composable(Screen.Swaps.route) {
-            SwapsScreen(navController = navController)
-        }
-        composable(Screen.PrivateChat.route) { backStackEntry ->
-            val recipientId = backStackEntry.arguments?.getString("recipientId")
-            val recipientName = backStackEntry.arguments?.getString("recipientName")?.let { Uri.decode(it) }
-            if (recipientId != null && recipientName != null) {
-                PrivateChatScreen(navController, recipientId = recipientId, recipientName = recipientName)
-            }
-        }
-        composable(Screen.Wishlist.route) {
-            WishlistScreen(navController = navController)
-        }
-        composable(Screen.Analytics.route) {
-            AnalyticsScreen(navController = navController)
-        }
-        composable(Screen.SavedSearches.route) {
-            SavedSearchesScreen(navController = navController)
-        }
-        // Note: NearMeScreen composable is defined within MainScreen's NavHost
     }
 }
-

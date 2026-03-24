@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,7 +60,7 @@ fun PrivateChatScreen(
     navController: NavController,
     viewModel: ChatViewModel = hiltViewModel(),
     authViewModel: AuthViewModel = hiltViewModel(),
-    recipientId: String?,
+    recipientId: String,
     recipientName: String?
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -67,9 +69,13 @@ fun PrivateChatScreen(
     val coroutineScope = rememberCoroutineScope()
     val isUploading by viewModel.isUploadingMedia.collectAsState()
 
-    LaunchedEffect(recipientId) {
-        if (recipientId != null) {
-            viewModel.listenForMessages(recipientId)
+    val chatId = (userState as? UserState.Authenticated)?.user?.uid?.let {
+        if (it > recipientId) "$it-$recipientId" else "$recipientId-$it"
+    } ?: ""
+
+    LaunchedEffect(chatId) {
+        if (chatId.isNotBlank()) {
+            viewModel.listenForMessages(chatId)
         }
     }
 
@@ -98,11 +104,6 @@ fun PrivateChatScreen(
             )
         },
         content = { paddingValues ->
-            if (recipientId == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Recipient not found.") }
-                return@Scaffold
-            }
-
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -119,15 +120,13 @@ fun PrivateChatScreen(
             }
         },
         bottomBar = {
-            if (recipientId != null) {
-                ChatInputBar(
-                    isUploading = isUploading,
-                    onSendMessage = { text -> viewModel.sendMessage(recipientId, text) },
-                    onSendImage = { uri -> viewModel.sendImageMessage(recipientId, uri) },
-                    onSendVideo = { uri -> viewModel.sendVideoMessage(recipientId, uri) },
-                    onSendLocation = { location -> viewModel.sendLocationMessage(recipientId, location) }
-                )
-            }
+            ChatInputBar(
+                isUploading = isUploading,
+                onSendMessage = { text -> viewModel.sendMessage(chatId, text) },
+                onSendImage = { uri -> viewModel.sendImageMessage(chatId, uri, recipientId) },
+                onSendVideo = { uri -> viewModel.sendVideoMessage(chatId, uri, recipientId) },
+                onSendLocation = { location -> viewModel.sendLocationMessage(chatId, location, recipientId) }
+            )
         }
     )
 }
@@ -262,7 +261,7 @@ fun MessageBubble(message: ChatMessage, isCurrentUser: Boolean) {
             Column(modifier = Modifier.widthIn(max = 280.dp).clip(shape).background(bubbleColor).padding(12.dp)) {
                 when (message.type) {
                     "text" -> Text(message.text, style = MaterialTheme.typography.bodyLarge)
-                    "image" -> MediaMessage(imageUrl = message.imageUrl, caption = message.text)
+                    "image" -> MediaMessage(imageUrl = message.imageUrl ?: "", caption = message.text)
                     "video" -> VideoPlayerBubble(videoUrl = message.videoUrl)
                     "location" -> LocationBubble(location = message.location)
                 }
@@ -276,6 +275,69 @@ fun MessageBubble(message: ChatMessage, isCurrentUser: Boolean) {
     }
 }
 
+@Composable
+fun MediaMessage(imageUrl: String?, caption: String) {
+    if (imageUrl != null) {
+        Image(
+            painter = rememberAsyncImagePainter(model = imageUrl),
+            contentDescription = caption,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Crop
+        )
+    }
+    if (caption != "Image") {
+        Text(caption, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
+@Composable
+fun VideoPlayerBubble(videoUrl: String?) {
+    val context = LocalContext.current
+    val exoPlayer = remember(videoUrl) {
+        ExoPlayer.Builder(context).build().apply {
+            videoUrl?.let {
+                val mediaItem = MediaItem.fromUri(it)
+                setMediaItem(mediaItem)
+                prepare()
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { exoPlayer.release() }
+    }
+
+    AndroidView(
+        factory = { PlayerView(it).apply { player = exoPlayer } },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .clip(RoundedCornerShape(8.dp))
+    )
+}
+
+@Composable
+fun LocationBubble(location: GeoPoint?) {
+    if (location == null) return
+    val context = LocalContext.current
+    val gmmIntentUri = Uri.parse("geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}(Pinned Location)")
+    val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+    mapIntent.setPackage("com.google.android.apps.maps")
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { context.startActivity(mapIntent) }
+    ) {
+        Text("Location Shared", fontWeight = FontWeight.Bold)
+        Text("Tap to view in Google Maps", style = MaterialTheme.typography.bodySmall)
+        // You can optionally add a static map image here for a better visual
+    }
+}
+
 private fun formatTimestamp(date: Date?): String {
     if (date == null) return ""
 
@@ -285,74 +347,9 @@ private fun formatTimestamp(date: Date?): String {
 
     return when {
         nowCal.get(Calendar.YEAR) == messageCal.get(Calendar.YEAR) &&
-                nowCal.get(Calendar.DAY_OF_YEAR) == messageCal.get(Calendar.DAY_OF_YEAR) -> "Today, ${timeFormat.format(date)}"
+                nowCal.get(Calendar.DAY_OF_YEAR) == messageCal.get(Calendar.DAY_OF_YEAR) -> timeFormat.format(date)
         nowCal.get(Calendar.YEAR) == messageCal.get(Calendar.YEAR) &&
-                nowCal.get(Calendar.DAY_OF_YEAR) - 1 == messageCal.get(Calendar.DAY_OF_YEAR) -> "Yesterday, ${timeFormat.format(date)}"
-        else -> SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(date)
+                nowCal.get(Calendar.DAY_OF_YEAR) == messageCal.get(Calendar.DAY_OF_YEAR) + 1 -> "Yesterday"
+        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(date)
     }
 }
-
-
-@Composable
-fun MediaMessage(imageUrl: String?, caption: String) {
-    Image(
-        painter = rememberAsyncImagePainter(model = imageUrl ?: "https://placehold.co/400x300?text=Image"),
-        contentDescription = "Sent image",
-        modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp).clip(RoundedCornerShape(8.dp)),
-        contentScale = ContentScale.Crop
-    )
-    if (caption.isNotBlank()) {
-        Spacer(Modifier.height(4.dp))
-        Text(caption, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-@Composable
-fun LocationBubble(location: GeoPoint?) {
-    if (location == null) return
-    val context = LocalContext.current
-    val staticMapUrl = "https://maps.googleapis.com/maps/api/staticmap?center=${location.latitude},${location.longitude}&zoom=15&size=600x400&markers=color:red%7C${location.latitude},${location.longitude}&key=AIzaSyCB8UI6puDzs7NHrGN2eCHd2kdrqN8ieZc"
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Image(
-            painter = rememberAsyncImagePainter(model = staticMapUrl),
-            contentDescription = "Shared location map",
-            modifier = Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(8.dp)),
-            contentScale = ContentScale.Crop
-        )
-        Spacer(Modifier.height(8.dp))
-        Button(onClick = {
-            val gmmIntentUri = Uri.parse("geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}(Pinned Location)")
-            val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-            mapIntent.setPackage("com.google.android.apps.maps")
-            context.startActivity(mapIntent)
-        }) {
-            Text("Open in Maps")
-        }
-    }
-}
-
-
-@Composable
-fun VideoPlayerBubble(videoUrl: String?) {
-    if (videoUrl == null) return
-    val context = LocalContext.current
-    val exoPlayer = remember {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(videoUrl))
-            prepare()
-        }
-    }
-    DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
-
-    AndroidView(
-        factory = {
-            PlayerView(it).apply {
-                player = exoPlayer
-                useController = true
-            }
-        },
-        modifier = Modifier.fillMaxWidth().height(200.dp).clip(RoundedCornerShape(8.dp))
-    )
-}
-

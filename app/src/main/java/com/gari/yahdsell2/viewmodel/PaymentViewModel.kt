@@ -5,16 +5,29 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.functions.FirebaseFunctions
+import com.stripe.android.paymentsheet.PaymentSheet
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
+
+// Data class to hold all necessary info for the Payment Sheet
+data class PaymentSheetData(
+    val paymentIntentClientSecret: String,
+    val configuration: PaymentSheet.Configuration
+)
 
 @HiltViewModel
 class PaymentViewModel @Inject constructor(
     private val auth: FirebaseAuth,
     private val functions: FirebaseFunctions
 ) : ViewModel() {
+
+    private val _paymentSheetData = MutableStateFlow<PaymentSheetData?>(null)
+    val paymentSheetData: StateFlow<PaymentSheetData?> = _paymentSheetData.asStateFlow()
 
     private fun callApi(action: String, data: Map<String, Any?>): com.google.android.gms.tasks.Task<com.google.firebase.functions.HttpsCallableResult> {
         val finalData = data.toMutableMap()
@@ -50,24 +63,30 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
-    fun createPromotionPaymentIntent(
-        promotionType: String,
-        onSuccess: (String?) -> Unit, // ✅ CHANGED: Allow nullable String
-        onError: (String) -> Unit
-    ) {
-        if (auth.currentUser == null) return onError("You must be logged in.")
+    fun createPromotionPaymentIntent(productId: String, amount: Int) {
         viewModelScope.launch {
             try {
-                val data = mapOf("promotionType" to promotionType)
+                val data = mapOf("productId" to productId, "amount" to amount)
                 val result = callApi("createPromotionPaymentIntent", data).await()
-                val clientSecret = (result.data as? Map<String, Any?>)?.get("clientSecret") as? String
-                // ✅ CHANGED: Pass null to onSuccess if fee is zero
-                onSuccess(clientSecret)
+                val paymentIntentClientSecret = (result.data as? Map<String, Any?>)?.get("paymentIntent") as? String
+                val ephemeralKey = (result.data as? Map<String, Any?>)?.get("ephemeralKey") as? String
+                val customer = (result.data as? Map<String, Any?>)?.get("customer") as? String
+
+                if (paymentIntentClientSecret != null && ephemeralKey != null && customer != null) {
+                    val config = PaymentSheet.Configuration(
+                        merchantDisplayName = "YahdSell Promotions",
+                        customer = PaymentSheet.CustomerConfiguration(customer, ephemeralKey)
+                    )
+                    _paymentSheetData.value = PaymentSheetData(paymentIntentClientSecret, config)
+                }
             } catch (e: Exception) {
                 Log.e("PaymentViewModel", "Error creating promotion payment intent", e)
-                onError(e.message ?: "An unknown error occurred.")
             }
         }
+    }
+
+    fun clearPaymentSheetConfig() {
+        _paymentSheetData.value = null
     }
 
     fun confirmPromotion(

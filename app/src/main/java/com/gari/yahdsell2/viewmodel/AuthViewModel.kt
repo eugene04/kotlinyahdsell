@@ -5,7 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gari.yahdsell2.model.UserProfile
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.ktx.userProfileChangeRequest
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,10 +16,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 
-
 sealed class UserState {
     object Loading : UserState()
-    data class Authenticated(val user: com.google.firebase.auth.FirebaseUser) : UserState()
+    data class Authenticated(val user: FirebaseUser) : UserState()
     object Unauthenticated : UserState()
     data class Error(val message: String) : UserState()
 }
@@ -35,78 +35,79 @@ class AuthViewModel @Inject constructor(
     private val _isAdmin = MutableStateFlow(false)
     val isAdmin: StateFlow<Boolean> = _isAdmin.asStateFlow()
 
-
     init {
         auth.addAuthStateListener { firebaseAuth ->
             val user = firebaseAuth.currentUser
-            _userState.value = if (user != null) {
-                UserState.Authenticated(user)
+            if (user != null) {
+                _userState.value = UserState.Authenticated(user)
+                checkAdminStatus()
             } else {
-                UserState.Unauthenticated
+                _userState.value = UserState.Unauthenticated
             }
         }
-    }
-
-    fun savePushToken(token: String) {
-        val currentUser = auth.currentUser ?: return
-        val tokenRef = firestore.collection("users").document(currentUser.uid)
-            .collection("pushTokens").document(token)
-        tokenRef.set(mapOf("token" to token, "timestamp" to com.google.firebase.firestore.FieldValue.serverTimestamp()))
-            .addOnSuccessListener { Log.d("AuthViewModel", "Push token saved successfully.") }
-            .addOnFailureListener { e -> Log.e("AuthViewModel", "Error saving push token", e) }
-    }
-
-    fun signOut() {
-        auth.signOut()
-        _userState.value = UserState.Unauthenticated
     }
 
     fun signIn(email: String, password: String) {
         viewModelScope.launch {
             _userState.value = UserState.Loading
             try {
-                val result = auth.signInWithEmailAndPassword(email, password).await()
-                _userState.value = result.user?.let { UserState.Authenticated(it) }
-                    ?: UserState.Error("Authentication failed.")
+                auth.signInWithEmailAndPassword(email, password).await()
+                // AuthStateListener will handle success
             } catch (e: Exception) {
-                _userState.value = UserState.Error(e.message ?: "Login failed")
+                Log.e("AuthViewModel", "Sign in failed", e)
+                _userState.value = UserState.Error(e.message ?: "An unknown error occurred.")
             }
         }
     }
 
+    // ✅ ADDED: Missing signUp function
     fun signUp(email: String, password: String, displayName: String) {
         viewModelScope.launch {
             _userState.value = UserState.Loading
             try {
-                val authResult = auth.createUserWithEmailAndPassword(email, password).await()
-                val firebaseUser = authResult.user
-                    ?: throw IllegalStateException("Firebase user not found")
-                val profileUpdates = userProfileChangeRequest { this.displayName = displayName }
-                firebaseUser.updateProfile(profileUpdates).await()
-                val userProfile = UserProfile(uid = firebaseUser.uid, displayName = displayName, email = email)
-                firestore.collection("users").document(firebaseUser.uid).set(userProfile).await()
-                _userState.value = UserState.Authenticated(firebaseUser)
+                // 1. Create User in Firebase Auth
+                val result = auth.createUserWithEmailAndPassword(email, password).await()
+                val user = result.user ?: throw Exception("User creation failed")
+
+                // 2. Update Profile (Display Name)
+                val profileUpdates = userProfileChangeRequest {
+                    this.displayName = displayName
+                }
+                user.updateProfile(profileUpdates).await()
+
+                // 3. Create User Document in Firestore
+                val newUserProfile = UserProfile(
+                    uid = user.uid,
+                    displayName = displayName,
+                    email = email,
+                    // other fields will use default values from data class
+                )
+
+                // We use .set() to create the document
+                firestore.collection("users").document(user.uid).set(newUserProfile).await()
+
+                // AuthStateListener will automatically pick up the authenticated state
             } catch (e: Exception) {
-                _userState.value = UserState.Error(e.message ?: "Sign up failed")
+                Log.e("AuthViewModel", "Sign up failed", e)
+                _userState.value = UserState.Error(e.message ?: "Registration failed.")
             }
         }
     }
 
     fun checkAdminStatus() {
-        viewModelScope.launch {
-            try {
-                val user = auth.currentUser
-                user?.getIdToken(true)?.addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        val isAdminClaim = task.result.claims["admin"] as? Boolean
-                        _isAdmin.value = isAdminClaim == true
+        val currentUser = auth.currentUser
+        if (currentUser != null) {
+            firestore.collection("users").document(currentUser.uid).get()
+                .addOnSuccessListener { document ->
+                    if (document != null) {
+                        val userProfile = document.toObject(UserProfile::class.java)
+                        _isAdmin.value = userProfile?.isAdmin ?: false
                     }
                 }
-            } catch (e: Exception) {
-                Log.e("AuthViewModel", "Error checking admin status", e)
-                _isAdmin.value = false
-            }
         }
     }
-}
 
+    fun signOut() {
+        auth.signOut()
+    }
+}

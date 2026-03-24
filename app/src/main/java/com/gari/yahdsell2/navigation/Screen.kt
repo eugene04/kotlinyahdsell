@@ -25,15 +25,18 @@ sealed class Screen(val route: String) {
     object EditProfile : Screen("edit_profile")
     object Swaps : Screen("swaps")
     object SavedSearches : Screen("saved_searches")
+    object Payments : Screen("payments")
 
-    // Route for editing a product
-    object EditProduct : Screen("edit_product/{productId}") {
-        fun createRoute(productId: String) = "edit_product/$productId"
-    }
-
-    object Submit : Screen("submit?productToRelistJson={productToRelistJson}") {
-        fun createRoute(productJson: String? = null): String {
-            return if (productJson != null) "submit?productToRelistJson=$productJson" else "submit"
+    // Route for submitting, editing, or relisting a product
+    object Submit : Screen("submit?productIdToEdit={productIdToEdit}&productToRelistJson={productToRelistJson}") {
+        fun createRoute(productIdToEdit: String? = null, productToRelistJson: String? = null): String {
+            val routeBuilder = StringBuilder("submit")
+            if (productIdToEdit != null) {
+                routeBuilder.append("?productIdToEdit=$productIdToEdit")
+            } else if (productToRelistJson != null) {
+                routeBuilder.append("?productToRelistJson=$productToRelistJson")
+            }
+            return routeBuilder.toString()
         }
     }
 

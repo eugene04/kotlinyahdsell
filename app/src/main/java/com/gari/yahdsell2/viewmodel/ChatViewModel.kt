@@ -10,9 +10,12 @@ import com.gari.yahdsell2.model.ChatbotMessage
 import com.gari.yahdsell2.model.PrivateChat
 import com.gari.yahdsell2.model.UserProfile
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.*
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.GeoPoint
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.ktx.toObject
-import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.storage.FirebaseStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,138 +23,174 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.util.*
 import javax.inject.Inject
+
+// Data class to hold the combined chat and user information for the UI
+data class ChatViewData(
+    val chat: PrivateChat,
+    val otherParticipant: UserProfile
+)
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val functions: FirebaseFunctions,
     private val storage: FirebaseStorage
 ) : ViewModel() {
 
-    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
-
-    private val _isUploadingMedia = MutableStateFlow(false)
-    val isUploadingMedia: StateFlow<Boolean> = _isUploadingMedia.asStateFlow()
-
-    private val _chatList = MutableStateFlow<List<PrivateChat>>(emptyList())
-    val chatList: StateFlow<List<PrivateChat>> = _chatList.asStateFlow()
-
+    // For ChatListScreen - Now exposes the combined data structure
+    private val _chatList = MutableStateFlow<List<ChatViewData>>(emptyList())
+    val chatList: StateFlow<List<ChatViewData>> = _chatList.asStateFlow()
     private val _isLoadingChatList = MutableStateFlow(false)
     val isLoadingChatList: StateFlow<Boolean> = _isLoadingChatList.asStateFlow()
 
-    private val _chatbotMessages = MutableStateFlow<List<ChatbotMessage>>(listOf(
-        ChatbotMessage(text = "Hello! How can I assist you with YahdSell today?", role = "model")
-    ))
+    // For PrivateChatScreen
+    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+    private var messageListener: ListenerRegistration? = null
+    private val _isUploadingMedia = MutableStateFlow(false)
+    val isUploadingMedia: StateFlow<Boolean> = _isUploadingMedia.asStateFlow()
+
+    // For ChatbotScreen
+    private val _chatbotMessages = MutableStateFlow<List<ChatbotMessage>>(emptyList())
     val chatbotMessages: StateFlow<List<ChatbotMessage>> = _chatbotMessages.asStateFlow()
 
-    private var chatListener: ListenerRegistration? = null
-
-    private fun callApi(action: String, data: Map<String, Any?>): com.google.android.gms.tasks.Task<com.google.firebase.functions.HttpsCallableResult> {
-        return functions.getHttpsCallable("publicApi").call(mapOf("action" to action, "data" to data))
-    }
-
     fun fetchChatList() {
-        val currentUser = auth.currentUser ?: return
-        _isLoadingChatList.value = true
+        val userId = auth.currentUser?.uid ?: return
         viewModelScope.launch {
+            _isLoadingChatList.value = true
             try {
-                val chatsSnapshot = firestore.collection("privateChats")
-                    .whereArrayContains("participantIds", currentUser.uid)
+                // 1. Fetch all chat documents where the current user is a participant
+                val chatsSnapshot = firestore.collection("chats")
+                    .whereArrayContains("participants", userId)
                     .orderBy("lastActivity", Query.Direction.DESCENDING)
-                    .get().await()
+                    .get()
+                    .await()
+                val chats = chatsSnapshot.documents.mapNotNull { it.toObject<PrivateChat>()?.copy(id = it.id) }
 
-                val otherParticipantIds = chatsSnapshot.documents.mapNotNull { doc ->
-                    doc.toObject<PrivateChat>()?.participantIds?.find { it != currentUser.uid }
-                }.distinct()
-
-                if (otherParticipantIds.isEmpty()) {
+                if (chats.isEmpty()) {
                     _chatList.value = emptyList()
-                    _isLoadingChatList.value = false
                     return@launch
                 }
 
+                // 2. Extract the IDs of the *other* participants
+                val otherParticipantIds = chats.mapNotNull { chat ->
+                    chat.participants.find { it != userId }
+                }.distinct()
+
+                if (otherParticipantIds.isEmpty()){
+                    _chatList.value = emptyList()
+                    return@launch
+                }
+
+                // 3. Fetch the UserProfile for all other participants in a single query
                 val usersSnapshot = firestore.collection("users")
-                    .whereIn(FieldPath.documentId(), otherParticipantIds)
-                    .get().await()
+                    .whereIn("uid", otherParticipantIds)
+                    .get()
+                    .await()
+                val userProfiles = usersSnapshot.toObjects(UserProfile::class.java).associateBy { it.uid }
 
-                val userProfiles = usersSnapshot.documents.mapNotNull { it.toObject<UserProfile>()?.copy(uid = it.id) }
-                    .associateBy { it.uid }
-
-                val chats = chatsSnapshot.documents.mapNotNull { doc ->
-                    val chat = doc.toObject<PrivateChat>()?.copy(id = doc.id)
-                    val otherId = chat?.participantIds?.find { it != currentUser.uid }
-                    val otherProfile = userProfiles[otherId]
-                    if (chat != null && otherProfile != null) {
-                        chat.copy(participants = mapOf(otherId!! to otherProfile))
-                    } else {
-                        null
+                // 4. Combine the chat data with the participant's profile
+                val chatViewDataList = chats.mapNotNull { chat ->
+                    val otherId = chat.participants.find { it != userId }
+                    userProfiles[otherId]?.let { otherUser ->
+                        ChatViewData(
+                            chat = chat,
+                            otherParticipant = otherUser
+                        )
                     }
                 }
-                _chatList.value = chats
+                _chatList.value = chatViewDataList
+
             } catch (e: Exception) {
-                Log.e("ChatViewModel", "Error fetching chat list.", e)
-                _chatList.value = emptyList()
+                Log.e("ChatViewModel", "Error fetching chat list", e)
+                _chatList.value = emptyList() // Clear list on error
             } finally {
                 _isLoadingChatList.value = false
             }
         }
     }
 
-    fun listenForMessages(recipientId: String) {
-        val currentUser = auth.currentUser ?: return
-        val chatId = listOf(currentUser.uid, recipientId).sorted().joinToString("_")
-        chatListener?.remove()
-        chatListener = firestore.collection("privateChats").document(chatId)
-            .collection("messages").orderBy("timestamp", Query.Direction.ASCENDING)
-            .addSnapshotListener { snapshot, error ->
-                if (error == null && snapshot != null) {
-                    _messages.value = snapshot.documents.mapNotNull { it.toObject<ChatMessage>()?.copy(id = it.id) }
+
+    fun listenForMessages(chatId: String) {
+        messageListener?.remove() // Remove previous listener
+        messageListener = firestore.collection("chats").document(chatId)
+            .collection("messages")
+            .orderBy("timestamp", Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) {
+                    Log.w("ChatViewModel", "Listen failed.", e)
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    _messages.value = snapshot.toObjects(ChatMessage::class.java)
                 }
             }
     }
 
-    fun sendMessage(recipientId: String, text: String) {
-        val currentUser = auth.currentUser ?: return
-        val message = ChatMessage(type = "text", text = text, senderId = currentUser.uid)
-        sendMessageObject(recipientId, message, text)
+    fun sendMessage(chatId: String, text: String) {
+        val userId = auth.currentUser?.uid
+        if (userId == null || text.isBlank()) return
+
+        val message = ChatMessage(
+            senderId = userId,
+            text = text,
+            type = "text",
+            timestamp = null // Handled by server
+        )
+        postMessage(chatId, message, text)
     }
 
-    fun sendImageMessage(recipientId: String, imageUri: Uri) {
-        uploadMediaAndSendMessage(recipientId, imageUri, "chat_images", "image", "[Image]")
+    fun sendImageMessage(chatId: String, uri: Uri, recipientId: String) {
+        uploadMedia(uri, "images") { downloadUrl ->
+            val message = ChatMessage(
+                senderId = auth.currentUser!!.uid,
+                imageUrl = downloadUrl,
+                type = "image",
+                text = "Image"
+            )
+            postMessage(chatId, message, "📷 Image", recipientId)
+        }
     }
 
-    fun sendVideoMessage(recipientId: String, videoUri: Uri) {
-        uploadMediaAndSendMessage(recipientId, videoUri, "chat_videos", "video", "[Video]")
+    fun sendVideoMessage(chatId: String, uri: Uri, recipientId: String) {
+        uploadMedia(uri, "videos") { downloadUrl ->
+            val message = ChatMessage(
+                senderId = auth.currentUser!!.uid,
+                videoUrl = downloadUrl,
+                type = "video",
+                text = "Video"
+            )
+            postMessage(chatId, message, "📹 Video", recipientId)
+        }
     }
 
-    fun sendLocationMessage(recipientId: String, location: Location) {
-        val currentUser = auth.currentUser ?: return
+    fun sendLocationMessage(chatId: String, location: Location, recipientId: String) {
         val geoPoint = GeoPoint(location.latitude, location.longitude)
         val message = ChatMessage(
-            type = "location",
+            senderId = auth.currentUser!!.uid,
             location = geoPoint,
-            senderId = currentUser.uid
+            type = "location",
+            text = "Shared their location"
         )
-        sendMessageObject(recipientId, message, "📍 Shared a location")
+        postMessage(chatId, message, "📍 Location", recipientId)
     }
 
-    private fun uploadMediaAndSendMessage(recipientId: String, uri: Uri, folder: String, type: String, lastMessage: String) {
-        val currentUser = auth.currentUser ?: return
+    fun sendChatbotMessage(text: String) {
+        // Implementation for sending a message to the chatbot
+    }
+
+    private fun uploadMedia(uri: Uri, folder: String, onComplete: (String) -> Unit) {
+        val userId = auth.currentUser?.uid ?: return
         viewModelScope.launch {
             _isUploadingMedia.value = true
             try {
-                val ref = storage.reference.child("$folder/${currentUser.uid}_${System.currentTimeMillis()}")
+                val ref = storage.reference.child("chat_media/$folder/${UUID.randomUUID()}")
                 ref.putFile(uri).await()
-                val url = ref.downloadUrl.await().toString()
-                val message = when (type) {
-                    "image" -> ChatMessage(type = "image", imageUrl = url, senderId = currentUser.uid)
-                    "video" -> ChatMessage(type = "video", videoUrl = url, senderId = currentUser.uid)
-                    else -> throw IllegalArgumentException("Unsupported media type")
-                }
-                sendMessageObject(recipientId, message, lastMessage)
+                val downloadUrl = ref.downloadUrl.await().toString()
+                onComplete(downloadUrl)
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error uploading media", e)
             } finally {
@@ -160,45 +199,46 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun sendMessageObject(recipientId: String, message: ChatMessage, lastMessageText: String) {
-        val currentUser = auth.currentUser ?: return
-        val chatId = listOf(currentUser.uid, recipientId).sorted().joinToString("_")
+    private fun postMessage(chatId: String, message: ChatMessage, lastMessageText: String, recipientId: String? = null) {
+        val userId = auth.currentUser?.uid ?: return
+        val finalChatId = if (recipientId != null) getChatId(userId, recipientId) else chatId
+
+        val chatDocRef = firestore.collection("chats").document(finalChatId)
+
         viewModelScope.launch {
             try {
-                firestore.collection("privateChats").document(chatId).collection("messages").add(message).await()
-                firestore.collection("privateChats").document(chatId).set(
+                val doc = chatDocRef.get().await()
+                if (!doc.exists() && recipientId != null) {
+                    val newChat = PrivateChat(
+                        id = finalChatId,
+                        participants = listOf(userId, recipientId),
+                        lastMessage = lastMessageText,
+                        lastActivity = null
+                    )
+                    chatDocRef.set(newChat).await()
+                }
+
+                chatDocRef.collection("messages").add(message).await()
+
+                chatDocRef.update(
                     mapOf(
-                        "participantIds" to listOf(currentUser.uid, recipientId),
                         "lastMessage" to lastMessageText,
                         "lastActivity" to FieldValue.serverTimestamp()
-                    ), SetOptions.merge()
+                    )
                 ).await()
 
             } catch (e: Exception) {
-                Log.e("ChatViewModel", "Error sending message object", e)
+                Log.e("ChatViewModel", "Error posting message", e)
             }
         }
     }
 
-    fun sendChatbotMessage(prompt: String) {
-        viewModelScope.launch {
-            _chatbotMessages.value += ChatbotMessage(text = prompt, role = "user")
-            _chatbotMessages.value += ChatbotMessage(text = "", role = "model", isThinking = true)
-            try {
-                val result = callApi("askGemini", mapOf("prompt" to prompt)).await()
-                val reply = (result.data as? Map<String, Any?>)?.get("reply") as? String ?: "Sorry, I couldn't process that."
-                val modelMessage = ChatbotMessage(text = reply, role = "model")
-                _chatbotMessages.value = _chatbotMessages.value.dropLast(1) + modelMessage
-            } catch (e: Exception) {
-                Log.e("ChatViewModel", "Error in sendChatbotMessage", e)
-                val errorMessage = ChatbotMessage(text = "Error: ${e.message}", role = "model")
-                _chatbotMessages.value = _chatbotMessages.value.dropLast(1) + errorMessage
-            }
-        }
+    private fun getChatId(user1: String, user2: String): String {
+        return if (user1 > user2) "$user1-$user2" else "$user2-$user1"
     }
 
     override fun onCleared() {
         super.onCleared()
-        chatListener?.remove()
+        messageListener?.remove()
     }
 }

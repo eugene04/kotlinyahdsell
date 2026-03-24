@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MonetizationOn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,10 +17,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.UserProfile
-// ✅ ADDED: Import for the Screen sealed class
 import com.gari.yahdsell2.navigation.Screen
+import com.gari.yahdsell2.viewmodel.ProfileViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -32,6 +32,7 @@ fun AdminScreen(
     var processingId by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
+    // Fetch requests when screen loads
     LaunchedEffect(Unit) {
         viewModel.fetchVerificationRequests()
     }
@@ -39,54 +40,51 @@ fun AdminScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Admin Panel") },
+                title = { Text("Admin Dashboard") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    // Button to navigate to Fees screen
+                    IconButton(onClick = { navController.navigate(Screen.AdminFees.route) }) {
+                        Icon(Icons.Default.MonetizationOn, contentDescription = "Manage Fees")
                     }
                 }
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-
-            // Button to navigate to Manage Fees Screen
-            Button(
-                onClick = { navController.navigate(Screen.AdminFees.route) },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                Icon(Icons.Default.MonetizationOn, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Manage Listing Fees")
-            }
-
-            Text("Pending Verification Requests", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-
-            Box(modifier = Modifier.fillMaxSize()) {
-                if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                } else if (verificationRequests.isEmpty()) {
-                    Text("No pending verification requests.", modifier = Modifier.align(Alignment.Center))
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(verificationRequests) { user ->
-                            VerificationRequestItem(
-                                user = user,
-                                isProcessing = processingId == user.uid,
-                                onApprove = {
-                                    processingId = user.uid
-                                    viewModel.approveVerification(user.uid) { success, message ->
-                                        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                                        processingId = null
-                                        // Refresh the list if approval was successful
-                                        if (success) viewModel.fetchVerificationRequests()
-                                    }
-                                }
-                            )
-                        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (isLoading && verificationRequests.isEmpty()) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else if (verificationRequests.isEmpty()) {
+                Text(
+                    "No pending verification requests.",
+                    modifier = Modifier.align(Alignment.Center),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(verificationRequests) { user ->
+                        VerificationRequestItem(
+                            user = user,
+                            isProcessing = processingId == user.uid,
+                            onApprove = {
+                                processingId = user.uid
+                                viewModel.approveVerification(user.uid)
+                                processingId = null
+                                Toast.makeText(context, "User Verified!", Toast.LENGTH_SHORT).show()
+                            }
+                        )
                     }
                 }
             }
@@ -105,25 +103,41 @@ fun VerificationRequestItem(
         elevation = CardDefaults.cardElevation(2.dp)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(user.displayName, fontWeight = FontWeight.Bold)
-                Text(user.email, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = user.displayName,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = user.email,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (user.verificationRequested) {
+                    Text(
+                        text = "Status: Pending Request",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
-            Button(
-                onClick = onApprove,
-                enabled = !isProcessing
-            ) {
-                if (isProcessing) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary)
-                } else {
+
+            if (isProcessing) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            } else {
+                Button(onClick = onApprove) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text("Approve")
                 }
             }
         }
     }
 }
-

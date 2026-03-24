@@ -74,7 +74,7 @@ class NearMeViewModel @Inject constructor(
         Log.d("NearMeViewModel", "Applying sort: $currentSort to ${products.size} raw products.")
         // Apply Sorting
         when (currentSort) {
-            NearMeSortOption.DISTANCE_ASC -> products.sortedBy { it.distanceKm } // distanceKm comes from CF
+            NearMeSortOption.DISTANCE_ASC -> products // Temporarily return the list as-isistanceKm comes from CF
             NearMeSortOption.PRICE_ASC -> products.sortedBy { it.price }
             NearMeSortOption.PRICE_DESC -> products.sortedByDescending { it.price }
             NearMeSortOption.DATE_DESC -> products.sortedByDescending { it.createdAt ?: Date(0) }

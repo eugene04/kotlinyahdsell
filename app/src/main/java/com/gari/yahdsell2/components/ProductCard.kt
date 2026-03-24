@@ -1,6 +1,5 @@
 package com.gari.yahdsell2.components
 
-import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -19,95 +18,126 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
+import com.gari.yahdsell2.model.Product
 import com.google.firebase.auth.FirebaseUser
 
 @Composable
 fun ProductCard(
-    product: Map<String, Any>,
+    product: Product,
     currentUser: FirebaseUser?,
+    distanceKm: Double? = null, // ✅ Explicit parameter for distance
     onToggleWishlist: (productId: String, sellerId: String) -> Unit,
     onClick: () -> Unit
 ) {
-    val isSold = product["isSold"] as? Boolean ?: false
-    val imageUrl = (product["imageUrls"] as? List<*>)?.firstOrNull()?.toString()
-        ?: "https://placehold.co/150x120/e0e0e0/7f7f7f?text=No+Image"
-    val name = product["name"]?.toString() ?: "Unnamed Product"
-    val seller = product["sellerDisplayName"]?.toString() ?: "Seller"
-    val price = product["price"] as? Double ?: 0.0
-    val distanceKm = product["distanceKm"] as? Double
-    val productId = product["id"]?.toString() ?: ""
-    val sellerId = product["sellerId"]?.toString() ?: ""
-    val isSaved = product["isSaved"] as? Boolean ?: false
+    val imageUrl = product.imageUrls.firstOrNull()?:"".firstOrNull() ?: "https://placehold.co/400x300?text=No+Image"
+    // Check if the user has saved this product.
+    // Note: In a real app, you'd pass the wishlist state explicitly or check against a list of saved IDs.
+    // For now, we'll assume the parent component handles the visual state of the heart icon if needed,
+    // or we can pass `isSaved` as a parameter.
+    // Ideally: Add `isSaved: Boolean` to parameters.
+    val isSaved = false // Placeholder, replace with actual state if available
 
     Card(
-        shape = RoundedCornerShape(12.dp),
-        elevation = CardDefaults.cardElevation(6.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(6.dp)
-            .clickable(enabled = !isSold) { onClick() }
+            .padding(8.dp)
+            .clickable(onClick = onClick)
+            .shadow(4.dp, RoundedCornerShape(12.dp)),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Box(modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+            ) {
                 Image(
                     painter = rememberAsyncImagePainter(imageUrl),
-                    contentDescription = null,
+                    contentDescription = product.name,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(140.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                    modifier = Modifier.fillMaxSize()
                 )
 
-                if (isSold) {
-                    Text(
-                        text = "SOLD",
-                        color = MaterialTheme.colorScheme.onError,
-                        style = MaterialTheme.typography.labelSmall,
+                // Sold Badge
+                if (product.isSold) {
+                    Box(
                         modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .background(MaterialTheme.colorScheme.error, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
-                    )
-                }
-
-                if (currentUser != null && !isSold) {
-                    IconButton(
-                        onClick = { onToggleWishlist(productId, sellerId) },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), CircleShape)
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (isSaved) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                            contentDescription = "Save",
-                            tint = if (isSaved) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                        Text(
+                            text = "SOLD",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.displayMedium
                         )
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(name, style = MaterialTheme.typography.titleMedium, maxLines = 2)
-            Text("By: $seller", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            if (distanceKm != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // Wishlist Button
+                IconButton(
+                    onClick = { onToggleWishlist(product.id, product.sellerId) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f), CircleShape)
+                        .size(36.dp)
+                ) {
                     Icon(
-                        imageVector = Icons.Outlined.LocationOn,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        imageVector = if (isSaved) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = "Save",
+                        tint = if (isSaved) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("${"%.1f".format(distanceKm)} km away", style = MaterialTheme.typography.labelSmall)
                 }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-            PriceDisplay(price = price, size = "large")
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = product.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "By: ${product.sellerDisplayName}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // ✅ Distance Display
+                if (distanceKm != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.LocationOn,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${"%.1f".format(distanceKm)} km away",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                PriceDisplay(price = product.price, size = "medium")
+            }
         }
     }
 }

@@ -381,7 +381,7 @@ fun NearMeProductCard(
         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Image(
                 painter = rememberAsyncImagePainter(
-                    model = product.imageUrls.firstOrNull() ?: "https://placehold.co/200x200?text=No+Image"
+                    model = product.imageUrls.firstOrNull()?:"".firstOrNull() ?: "https://placehold.co/200x200?text=No+Image"
                 ),
                 contentDescription = product.name,
                 modifier = Modifier
@@ -395,9 +395,7 @@ fun NearMeProductCard(
                 Spacer(Modifier.height(4.dp))
                 Text(formatPrice(product.price), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
-                product.distanceKm?.let {
-                    Text("${"%.1f".format(it)} km away", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+
             }
         }
     }

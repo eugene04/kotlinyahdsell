@@ -14,17 +14,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.gari.yahdsell2.viewmodel.ProfileViewModel
 import com.gari.yahdsell2.model.Offer
+import com.gari.yahdsell2.viewmodel.ProductDetailViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OffersScreen(
     navController: NavController,
-    viewModel: ProfileViewModel,
     productId: String,
-    productName: String
+    productName: String,
+    viewModel: ProductDetailViewModel = hiltViewModel()
 ) {
     val offers by viewModel.offersForProduct.collectAsState()
     val isLoading by viewModel.isLoadingOffers.collectAsState()
@@ -59,10 +60,10 @@ fun OffersScreen(
                         OfferItem(
                             offer = offer,
                             onAccept = {
-                                viewModel.updateOfferStatus(productId, offer.id, "accepted")
+                                viewModel.respondToOffer(offer.id, true)
                             },
                             onReject = {
-                                viewModel.updateOfferStatus(productId, offer.id, "rejected")
+                                viewModel.respondToOffer(offer.id, false)
                             }
                         )
                     }
@@ -90,7 +91,7 @@ fun OfferItem(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Amount: $${"%.2f".format(offer.offerAmount)}",
+                text = "Amount: $${String.format("%.2f", offer.offerAmount)}",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.primary
             )
